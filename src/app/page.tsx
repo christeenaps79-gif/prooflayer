@@ -182,6 +182,8 @@ export default function Home() {
   async function openAudit() {
     setView("audit");
     setError("");
+    setAuditRecord(null);
+    setAuditConfirmed(false);
 
     if (!currentRecordId) {
       setAuditConfirmed(false);
