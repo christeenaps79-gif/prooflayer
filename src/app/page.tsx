@@ -208,7 +208,6 @@ export default function Home() {
       setAuditRecord({
         recordId: currentRecordId,
         executionId:
-          auditRecord?.executionId ||
           evidence.record?.event?.execution_id ||
           evidence.execution_id ||
           "",
