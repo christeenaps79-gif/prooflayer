@@ -1,3 +1,4 @@
+```tsx
 "use client";
 
 import { useMemo, useState } from "react";
@@ -97,6 +98,18 @@ export default function Home() {
   const selectedCase =
     cases.find((item) => item.id === selectedId) || cases[0];
 
+  /*
+   * IMPORTANT FIX:
+   * Always resolve the currently selected case's saved receipt first.
+   * This prevents the third approved record from replacing/losing
+   * the receipt state of the other approved records.
+   */
+  const activeEvidence =
+    evidenceByCase[selectedCase.id] || evidence;
+
+  const activeVerification =
+    verificationByCase[selectedCase.id] || verification;
+
   const verifiedCount = cases.filter(
     (item) => item.status === "verified",
   ).length;
@@ -111,21 +124,23 @@ export default function Home() {
 
   const currentRecordId = useMemo(
     () =>
-      evidence?.record?.record_id ||
-      evidence?.record_id ||
-      evidence?.recordId ||
+      activeEvidence?.record?.record_id ||
+      activeEvidence?.record_id ||
+      activeEvidence?.recordId ||
       "",
-    [evidence],
+    [activeEvidence],
   );
 
   function addTimeline(message: string) {
     setTimeline((items) =>
       [
-        `${new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        })}  ${message}`,
+        `${
+  new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  })
+}  ${ message } `,
         ...items,
       ].slice(0, 6),
     );
@@ -138,7 +153,7 @@ export default function Home() {
     setAuditRecord(null);
     setModified(false);
 
-    addTimeline(`Decision submitted — ${selectedCase.id}`);
+    addTimeline(`Decision submitted — ${ selectedCase.id } `);
 
     try {
       const response = await fetch("/api/evidence", {
@@ -189,15 +204,15 @@ export default function Home() {
         items.map((item) =>
           item.id === selectedCase.id
             ? {
-              ...item,
-              status: "verified",
-            }
+                ...item,
+                status: "verified",
+              }
             : item,
         ),
       );
 
       addTimeline(
-        `CooL evidence committed — ${selectedCase.id}`,
+        `CooL evidence committed — ${ selectedCase.id } `,
       );
 
       addTimeline(
@@ -273,10 +288,23 @@ export default function Home() {
   }
 
   async function simulateAlteration() {
-    if (!evidence) return;
+    /*
+     * IMPORTANT FIX:
+     * Use the receipt belonging to the currently selected case.
+     * This remains available even after all three records are approved.
+     */
+    const sourceEvidence =
+      evidenceByCase[selectedCase.id] || evidence;
+
+    if (!sourceEvidence) {
+      setError(
+        "No execution receipt is available for this case.",
+      );
+      return;
+    }
 
     const changed = JSON.parse(
-      JSON.stringify(evidence),
+      JSON.stringify(sourceEvidence),
     );
 
     const event = changed.record?.event;
@@ -305,15 +333,15 @@ export default function Home() {
       items.map((item) =>
         item.id === selectedCase.id
           ? {
-            ...item,
-            status: "exception",
-          }
+              ...item,
+              status: "exception",
+            }
           : item,
       ),
     );
 
     addTimeline(
-      `Security diagnostic altered receipt ${selectedCase.id}`,
+      `Security diagnostic altered receipt ${ selectedCase.id } `,
     );
 
     // Send the altered receipt to the real backend verifier.
@@ -331,31 +359,53 @@ export default function Home() {
   }
 
   async function restoreReceipt() {
-    if (!originalEvidence) return;
+    /*
+     * IMPORTANT FIX:
+     * Restore from the permanent receipt for this case.
+     * Never restore from the tampered display state.
+     */
+    const sourceOriginal =
+      evidenceByCase[selectedCase.id] ||
+      originalEvidence;
+
+    if (!sourceOriginal) {
+      setError(
+        "No original verified receipt is available.",
+      );
+      return;
+    }
 
     const restored = JSON.parse(
-      JSON.stringify(originalEvidence),
+      JSON.stringify(sourceOriginal),
     );
 
     setEvidence(restored);
+    setOriginalEvidence(restored);
     setModified(false);
 
     setCases((items) =>
       items.map((item) =>
         item.id === selectedCase.id
           ? {
-            ...item,
-            status: "verified",
-          }
+              ...item,
+              status: "verified",
+            }
           : item,
       ),
     );
 
     addTimeline(
-      `Original receipt restored — ${selectedCase.id}`,
+      `Original receipt restored — ${ selectedCase.id } `,
     );
 
-    await verify(restored);
+    const result = await verify(restored);
+
+    if (result) {
+      setVerificationByCase((items) => ({
+        ...items,
+        [selectedCase.id]: result,
+      }));
+    }
 
     addTimeline(
       `Original receipt verified successfully`,
@@ -383,7 +433,7 @@ export default function Home() {
   async function retrieveReceipt() {
     setError("");
 
-    if (!currentRecordId || !evidence) {
+    if (!currentRecordId || !activeEvidence) {
       setError(
         "No execution receipt is available for retrieval.",
       );
@@ -393,18 +443,18 @@ export default function Home() {
     setLoading(true);
 
     addTimeline(
-      `Receipt retrieval requested — ${selectedCase.id}`,
+      `Receipt retrieval requested — ${ selectedCase.id } `,
     );
 
     try {
       setAuditRecord({
         recordId: currentRecordId,
         executionId:
-          evidence.record?.event?.execution_id ||
-          evidence.execution_id ||
+          activeEvidence.record?.event?.execution_id ||
+          activeEvidence.execution_id ||
           "",
-        evidence,
-        verification,
+        evidence: activeEvidence,
+        verification: activeVerification,
         decision: {
           caseId: selectedCase.id,
           decision: selectedCase.recommendation,
@@ -429,8 +479,11 @@ export default function Home() {
   function selectCase(item: CaseItem) {
     setSelectedId(item.id);
 
-    // If this case has already been approved,
-    // load its own saved CooL receipt.
+    /*
+     * IMPORTANT FIX:
+     * Each case has an independent receipt.
+     * Selecting a case reloads its own receipt and verification.
+     */
     const savedEvidence =
       evidenceByCase[item.id] || null;
 
@@ -460,7 +513,7 @@ export default function Home() {
     );
   }
 
-  const verified = verification?.ok === true;
+  const verified = activeVerification?.ok === true;
 
   return (
     <main className="shell">
@@ -645,10 +698,11 @@ export default function Home() {
                 {cases.map((item) => (
                   <button
                     key={item.id}
-                    className={`queueRow ${selectedId === item.id
-                        ? "selected"
-                        : ""
-                      }`}
+                    className={`queueRow ${
+  selectedId === item.id
+    ? "selected"
+    : ""
+} `}
                     onClick={() =>
                       selectCase(item)
                     }
@@ -668,13 +722,13 @@ export default function Home() {
                     </span>
 
                     <span
-                      className={`priority ${item.priority.toLowerCase()}`}
+                      className={`priority ${ item.priority.toLowerCase() } `}
                     >
                       {item.priority}
                     </span>
 
                     <span
-                      className={`queueStatus ${item.status}`}
+                      className={`queueStatus ${ item.status } `}
                     >
                       {item.status ===
                         "pending"
@@ -692,7 +746,7 @@ export default function Home() {
                 ))}
               </div>
 
-              {!evidence ? (
+              {!activeEvidence ? (
                 <section className="decisionPanel">
                   <div className="decisionHead">
                     <div>
@@ -722,19 +776,19 @@ export default function Home() {
 
                     <Meta
                       label="AI SERVICE"
-                      value={`${selectedCase.service} / 3.2`}
+                      value={`${ selectedCase.service } / 3.2`}
                     />
 
-                    <Meta
-                      label="POLICY"
-                      value={selectedCase.policy}
-                    />
+  < Meta
+label = "POLICY"
+value = { selectedCase.policy }
+  />
 
-                    <Meta
-                      label="PRIORITY"
-                      value={selectedCase.priority}
-                    />
-                  </div>
+  <Meta
+    label="PRIORITY"
+    value={selectedCase.priority}
+  />
+                  </div >
 
                   <div className="decisionColumns">
                     <div>
@@ -771,7 +825,7 @@ export default function Home() {
                       disabled={
                         loading ||
                         selectedCase.status !==
-                        "pending"
+                          "pending"
                       }
                     >
                       {loading
@@ -787,262 +841,271 @@ export default function Home() {
                       server.
                     </span>
                   </div>
-                </section>
+                </section >
               ) : (
-                <ControlResult />
-              )}
+  <ControlResult />
+)}
             </>
           )}
 
-          {view === "audit" && (
-            <section className="auditView">
-              <div className="auditToolbar">
-                <span>
-                  RECORD RETRIEVAL
-                </span>
+{
+  view === "audit" && (
+    <section className="auditView">
+      <div className="auditToolbar">
+        <span>
+          RECORD RETRIEVAL
+        </span>
 
-                <strong>
-                  {currentRecordId ||
-                    "NO RECORD SELECTED"}
-                </strong>
+        <strong>
+          {currentRecordId ||
+            "NO RECORD SELECTED"}
+        </strong>
 
-                {auditConfirmed && (
-                  <span
-                    style={{
-                      color: "#79a795",
-                      letterSpacing: ".1em",
-                    }}
-                  >
-                    ✓ RECEIPT LOADED
-                  </span>
-                )}
+        {auditConfirmed && (
+          <span
+            style={{
+              color: "#79a795",
+              letterSpacing: ".1em",
+            }}
+          >
+            ✓ RECEIPT LOADED
+          </span>
+        )}
 
-                <button
-                  onClick={
-                    retrieveReceipt
-                  }
-                  disabled={
-                    !currentRecordId ||
-                    loading ||
-                    auditConfirmed
-                  }
-                >
-                  {loading
-                    ? "RETRIEVING..."
-                    : auditConfirmed
-                      ? "RECEIPT LOADED"
-                      : "RETRIEVE RECEIPT"}
-                </button>
-              </div>
-
-              {auditRecord ? (
-                <AuditDetails
-                  record={auditRecord}
-                />
-              ) : (
-                <div className="emptyState">
-                  <strong>
-                    No audit record selected
-                  </strong>
-
-                  <span>
-                    Process a decision in
-                    Decision Operations first,
-                    then return here to retrieve
-                    its stored receipt.
-                  </span>
-                </div>
-              )}
-            </section>
-          )}
-
-          {view === "diagnostics" && (
-            <section className="diagnosticsView">
-              <div className="diagHero">
-                <div>
-                  <span className="eyebrow">
-                    SECURITY CONTROL
-                  </span>
-
-                  <h2>
-                    Receipt integrity test
-                  </h2>
-
-                  <p>
-                    Use the current verified
-                    receipt to demonstrate that a
-                    cryptographically bound field
-                    cannot be changed silently.
-                  </p>
-                </div>
-
-                <div
-                  className={`diagState ${verified && !modified
-                      ? "good"
-                      : modified
-                        ? "bad"
-                        : "idle"
-                    }`}
-                >
-                  <strong>
-                    {modified
-                      ? "EXCEPTION DETECTED"
-                      : verified
-                        ? "CONTROL PASS"
-                        : "READY"}
-                  </strong>
-
-                  <span>
-                    {modified
-                      ? "Receipt alteration detected"
-                      : "Server-side verification"}
-                  </span>
-                </div>
-              </div>
-
-              {!evidence ? (
-                <div className="emptyState">
-                  <strong>
-                    No execution receipt loaded
-                  </strong>
-
-                  <span>
-                    Process a decision first. The
-                    diagnostic operates on the
-                    actual CooL receipt generated
-                    by the backend.
-                  </span>
-
-                  <button
-                    onClick={() =>
-                      setView("operations")
-                    }
-                  >
-                    OPEN DECISION OPERATIONS →
-                  </button>
-                </div>
-              ) : (
-                <div className="diagGrid">
-                  <div className="diagCard">
-                    <span>
-                      TEST SUBJECT
-                    </span>
-
-                    <strong>
-                      {selectedCase.id}
-                    </strong>
-
-                    <small>
-                      {currentRecordId}
-                    </small>
-                  </div>
-
-                  <div className="diagCard">
-                    <span>
-                      BINDING INTEGRITY
-                    </span>
-
-                    <strong
-                      className={
-                        modified
-                          ? "badText"
-                          : "goodText"
-                      }
-                    >
-                      {findCheck(
-                        verification,
-                        [
-                          "binding",
-                          "binding_integrity",
-                        ],
-                      ) === false
-                        ? "FAILED"
-                        : "PASS"}
-                    </strong>
-                  </div>
-
-                  <div className="diagCard">
-                    <span>
-                      DIGITAL SIGNATURE
-                    </span>
-
-                    <strong
-                      className={
-                        modified
-                          ? "badText"
-                          : "goodText"
-                      }
-                    >
-                      {findCheck(
-                        verification,
-                        ["signature"],
-                      ) === false
-                        ? "FAILED"
-                        : "PASS"}
-                    </strong>
-                  </div>
-
-                  <div className="diagAction">
-                    {modified ? (
-                      <button
-                        className="restore"
-                        onClick={
-                          restoreReceipt
-                        }
-                        disabled={loading}
-                      >
-                        RESTORE VERIFIED RECEIPT
-                      </button>
-                    ) : (
-                      <button
-                        onClick={
-                          simulateAlteration
-                        }
-                        disabled={loading}
-                      >
-                        SIMULATE RECORD ALTERATION
-                      </button>
-                    )}
-
-                    <small>
-                      Automatic backend
-                      re-verification · no
-                      client-side trust
-                    </small>
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
-
-          {timeline.length > 0 && (
-            <div className="timeline">
-              <div className="sectionHeader">
-                <div>
-                  <span>04</span>
-                  <strong>
-                    CONTROL HISTORY
-                  </strong>
-                </div>
-
-                <small>
-                  Current session
-                </small>
-              </div>
-
-              {timeline.map((item, i) => (
-                <div
-                  className="timelineRow"
-                  key={`${item}-${i}`}
-                >
-                  <i />
-                  {item}
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
+        <button
+          onClick={
+            retrieveReceipt
+          }
+          disabled={
+            !currentRecordId ||
+            loading ||
+            auditConfirmed
+          }
+        >
+          {loading
+            ? "RETRIEVING..."
+            : auditConfirmed
+              ? "RECEIPT LOADED"
+              : "RETRIEVE RECEIPT"}
+        </button>
       </div>
+
+      {auditRecord ? (
+        <AuditDetails
+          record={auditRecord}
+        />
+      ) : (
+        <div className="emptyState">
+          <strong>
+            No audit record selected
+          </strong>
+
+          <span>
+            Process a decision in
+            Decision Operations first,
+            then return here to retrieve
+            its stored receipt.
+          </span>
+        </div>
+      )}
+    </section>
+  )
+}
+
+{
+  view === "diagnostics" && (
+    <section className="diagnosticsView">
+      <div className="diagHero">
+        <div>
+          <span className="eyebrow">
+            SECURITY CONTROL
+          </span>
+
+          <h2>
+            Receipt integrity test
+          </h2>
+
+          <p>
+            Use the current verified
+            receipt to demonstrate that a
+            cryptographically bound field
+            cannot be changed silently.
+          </p>
+        </div>
+
+        <div
+          className={`diagState ${verified && !modified
+              ? "good"
+              : modified
+                ? "bad"
+                : "idle"
+            }`}
+        >
+          <strong>
+            {modified
+              ? "EXCEPTION DETECTED"
+              : verified
+                ? "CONTROL PASS"
+                : "READY"}
+          </strong>
+
+          <span>
+            {modified
+              ? "Receipt alteration detected"
+              : "Server-side verification"}
+          </span>
+        </div>
+      </div>
+
+      {!activeEvidence ? (
+        <div className="emptyState">
+          <strong>
+            No execution receipt loaded
+          </strong>
+
+          <span>
+            Process a decision first. The
+            diagnostic operates on the
+            actual CooL receipt generated
+            by the backend.
+          </span>
+
+          <button
+            onClick={() =>
+              setView("operations")
+            }
+          >
+            OPEN DECISION OPERATIONS →
+          </button>
+        </div>
+      ) : (
+        <div className="diagGrid">
+          <div className="diagCard">
+            <span>
+              TEST SUBJECT
+            </span>
+
+            <strong>
+              {selectedCase.id}
+            </strong>
+
+            <small>
+              {currentRecordId}
+            </small>
+          </div>
+
+          <div className="diagCard">
+            <span>
+              BINDING INTEGRITY
+            </span>
+
+            <strong
+              className={
+                modified
+                  ? "badText"
+                  : "goodText"
+              }
+            >
+              {findCheck(
+                activeVerification,
+                [
+                  "binding",
+                  "binding_integrity",
+                ],
+              ) === false
+                ? "FAILED"
+                : "PASS"}
+            </strong>
+          </div>
+
+          <div className="diagCard">
+            <span>
+              DIGITAL SIGNATURE
+            </span>
+
+            <strong
+              className={
+                modified
+                  ? "badText"
+                  : "goodText"
+              }
+            >
+              {findCheck(
+                activeVerification,
+                ["signature"],
+              ) === false
+                ? "FAILED"
+                : "PASS"}
+            </strong>
+          </div>
+
+          <div className="diagAction">
+            {modified ? (
+              <button
+                className="restore"
+                onClick={
+                  restoreReceipt
+                }
+                disabled={loading}
+              >
+                RESTORE VERIFIED RECEIPT
+              </button>
+            ) : (
+              <button
+                onClick={
+                  simulateAlteration
+                }
+                disabled={
+                  loading ||
+                  !activeEvidence
+                }
+              >
+                SIMULATE RECORD ALTERATION
+              </button>
+            )}
+
+            <small>
+              Automatic backend
+              re-verification · no
+              client-side trust
+            </small>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+{
+  timeline.length > 0 && (
+    <div className="timeline">
+      <div className="sectionHeader">
+        <div>
+          <span>04</span>
+          <strong>
+            CONTROL HISTORY
+          </strong>
+        </div>
+
+        <small>
+          Current session
+        </small>
+      </div>
+
+      {timeline.map((item, i) => (
+        <div
+          className="timelineRow"
+          key={`${item}-${i}`}
+        >
+          <i />
+          {item}
+        </div>
+      ))}
+    </div>
+  )
+}
+        </section >
+      </div >
 
       <footer>
         <span>
@@ -1056,254 +1119,276 @@ export default function Home() {
       </footer>
 
       <style jsx global>{styles}</style>
-    </main>
+    </main >
   );
 
-  function ControlResult() {
-    if (!evidence) return null;
+function ControlResult() {
+  /*
+   * IMPORTANT FIX:
+   * ControlResult uses the receipt belonging to the selected case.
+   * Therefore approving another case cannot make this panel disappear.
+   */
+  const resultEvidence =
+    evidenceByCase[selectedCase.id] || evidence;
 
-    return (
-      <section className="resultPanel">
-        <div className="resultHead">
-          <div>
-            <span className="eyebrow">
-              03 / EXECUTION CONTROL
-            </span>
+  const resultVerification =
+    verificationByCase[selectedCase.id] || verification;
 
-            <h2>
-              {modified
-                ? "Integrity exception"
-                : "Decision verified"}
-            </h2>
+  if (!resultEvidence) return null;
 
-            <p>
-              {modified
-                ? "The execution receipt no longer matches its cryptographic binding."
-                : "The decision was recorded and its execution evidence was verified automatically."}
-            </p>
-          </div>
+  const resultVerified =
+    resultVerification?.ok === true;
 
-          <div
-            className={`resultBadge ${verified ? "good" : "bad"
-              }`}
-          >
-            <b>
-              {verified ? "✓" : "!"}
-            </b>
+  return (
+    <section className="resultPanel">
+      <div className="resultHead">
+        <div>
+          <span className="eyebrow">
+            03 / EXECUTION CONTROL
+          </span>
 
-            <span>
-              EXECUTION INTEGRITY
-              <strong>
-                {verified
-                  ? "VERIFIED"
-                  : "EXCEPTION"}
-              </strong>
-            </span>
-          </div>
-        </div>
-
-        <div className="controlStrip">
-          <div>
-            <span>RECORD</span>
-            <strong>
-              {currentRecordId}
-            </strong>
-          </div>
-
-          <div>
-            <span>RECEIPT</span>
-            <strong>
-              {auditConfirmed
-                ? "RETRIEVED"
-                : "STORED"}
-            </strong>
-          </div>
-
-          <div>
-            <span>ATTESTATION</span>
-            <strong>
-              SIMULATED
-            </strong>
-          </div>
-        </div>
-
-        <div className="resultGrid">
-          <div className="controlCard">
-            <PanelTitle
-              n="01"
-              title="CONTROL STATUS"
-            />
-
-            <Check
-              label="Binding integrity"
-              value={findCheck(
-                verification,
-                [
-                  "binding",
-                  "binding_integrity",
-                ],
-              )}
-            />
-
-            <Check
-              label="Digital signature"
-              value={findCheck(
-                verification,
-                ["signature"],
-              )}
-            />
-
-            <Check
-              label="Transparency inclusion"
-              value={findCheck(
-                verification,
-                ["inclusion"],
-              )}
-            />
-
-            <Check
-              label="Attestation"
-              value={null}
-              simulated
-            />
-          </div>
-
-          <div className="controlCard technical">
-            <PanelTitle
-              n="02"
-              title="CRYPTOGRAPHIC EVIDENCE"
-            />
-
-            <Hash
-              label="Metadata hash"
-              value={
-                evidence.record?.event
-                  ?.metadata_hash
-              }
-              changed={modified}
-            />
-
-            <Hash
-              label="Binding hash"
-              value={
-                evidence.binding_hash
-              }
-            />
-
-            <Hash
-              label="Input commitment"
-              value={
-                evidence.record?.event
-                  ?.commitments?.input
-              }
-            />
-
-            <Hash
-              label="Output commitment"
-              value={
-                evidence.record?.event
-                  ?.commitments?.output
-              }
-            />
-          </div>
-        </div>
-
-        <div className="businessRecord">
-          <PanelTitle
-            n="03"
-            title="DECISION RECORD"
-          />
-
-          <div className="businessGrid">
-            <div>
-              <label>CASE</label>
-              <strong>
-                {selectedCase.id}
-              </strong>
-              <small>
-                {selectedCase.title}
-              </small>
-            </div>
-
-            <div>
-              <label>DECISION</label>
-              <strong>
-                Approved
-              </strong>
-              <small>
-                {selectedCase.policy}
-              </small>
-            </div>
-
-            <div>
-              <label>AI SERVICE</label>
-              <strong>
-                {selectedCase.service}
-              </strong>
-              <small>
-                Release 3.2
-              </small>
-            </div>
-          </div>
-        </div>
-
-        <div className="resultActions">
-          <button
-            className="secondary"
-            onClick={() =>
-              verify(evidence)
-            }
-            disabled={loading}
-          >
-            {loading
-              ? "VERIFYING..."
-              : "VERIFY RECEIPT"}
-          </button>
-
-          <button
-            className="secondary"
-            onClick={() =>
-              setView("audit")
-            }
-          >
-            OPEN AUDIT RECORD →
-          </button>
-
-          <button
-            className={
-              modified
-                ? "restore"
-                : "diagnostic"
-            }
-            onClick={() =>
-              modified
-                ? restoreReceipt()
-                : simulateAlteration()
-            }
-            disabled={loading}
-          >
+          <h2>
             {modified
-              ? "RESTORE VERIFIED RECEIPT"
-              : "SIMULATE RECORD ALTERATION"}
-          </button>
+              ? "Integrity exception"
+              : "Decision verified"}
+          </h2>
+
+          <p>
+            {modified
+              ? "The execution receipt no longer matches its cryptographic binding."
+              : "The decision was recorded and its execution evidence was verified automatically."}
+          </p>
         </div>
 
-        <div className="disclaimer">
+        <div
+          className={`resultBadge ${resultVerified ? "good" : "bad"
+            }`}
+        >
           <b>
-            GOVERNANCE BOUNDARY
+            {resultVerified ? "✓" : "!"}
           </b>
 
           <span>
-            CooL establishes evidence of
-            recorded execution and detects
-            subsequent evidence modification.
-            It does not establish that an AI
-            decision was correct, fair, or safe.
+            EXECUTION INTEGRITY
+            <strong>
+              {resultVerified
+                ? "VERIFIED"
+                : "EXCEPTION"}
+            </strong>
           </span>
         </div>
-      </section>
-    );
-  }
+      </div>
+
+      <div className="controlStrip">
+        <div>
+          <span>RECORD</span>
+          <strong>
+            {resultEvidence.record?.record_id ||
+              resultEvidence.record_id ||
+              resultEvidence.recordId ||
+              ""}
+          </strong>
+        </div>
+
+        <div>
+          <span>RECEIPT</span>
+          <strong>
+            {auditConfirmed
+              ? "RETRIEVED"
+              : "STORED"}
+          </strong>
+        </div>
+
+        <div>
+          <span>ATTESTATION</span>
+          <strong>
+            SIMULATED
+          </strong>
+        </div>
+      </div>
+
+      <div className="resultGrid">
+        <div className="controlCard">
+          <PanelTitle
+            n="01"
+            title="CONTROL STATUS"
+          />
+
+          <Check
+            label="Binding integrity"
+            value={findCheck(
+              resultVerification,
+              [
+                "binding",
+                "binding_integrity",
+              ],
+            )}
+          />
+
+          <Check
+            label="Digital signature"
+            value={findCheck(
+              resultVerification,
+              ["signature"],
+            )}
+          />
+
+          <Check
+            label="Transparency inclusion"
+            value={findCheck(
+              resultVerification,
+              ["inclusion"],
+            )}
+          />
+
+          <Check
+            label="Attestation"
+            value={null}
+            simulated
+          />
+        </div>
+
+        <div className="controlCard technical">
+          <PanelTitle
+            n="02"
+            title="CRYPTOGRAPHIC EVIDENCE"
+          />
+
+          <Hash
+            label="Metadata hash"
+            value={
+              resultEvidence.record?.event
+                ?.metadata_hash
+            }
+            changed={modified}
+          />
+
+          <Hash
+            label="Binding hash"
+            value={
+              resultEvidence.binding_hash
+            }
+          />
+
+          <Hash
+            label="Input commitment"
+            value={
+              resultEvidence.record?.event
+                ?.commitments?.input
+            }
+          />
+
+          <Hash
+            label="Output commitment"
+            value={
+              resultEvidence.record?.event
+                ?.commitments?.output
+            }
+          />
+        </div>
+      </div>
+
+      <div className="businessRecord">
+        <PanelTitle
+          n="03"
+          title="DECISION RECORD"
+        />
+
+        <div className="businessGrid">
+          <div>
+            <label>CASE</label>
+            <strong>
+              {selectedCase.id}
+            </strong>
+            <small>
+              {selectedCase.title}
+            </small>
+          </div>
+
+          <div>
+            <label>DECISION</label>
+            <strong>
+              Approved
+            </strong>
+            <small>
+              {selectedCase.policy}
+            </small>
+          </div>
+
+          <div>
+            <label>AI SERVICE</label>
+            <strong>
+              {selectedCase.service}
+            </strong>
+            <small>
+              Release 3.2
+            </small>
+          </div>
+        </div>
+      </div>
+
+      <div className="resultActions">
+        <button
+          className="secondary"
+          onClick={() =>
+            verify(resultEvidence)
+          }
+          disabled={loading}
+        >
+          {loading
+            ? "VERIFYING..."
+            : "VERIFY RECEIPT"}
+        </button>
+
+        <button
+          className="secondary"
+          onClick={() =>
+            setView("audit")
+          }
+        >
+          OPEN AUDIT RECORD →
+        </button>
+
+        {/*
+           * IMPORTANT:
+           * This button is ALWAYS rendered while a receipt exists.
+           * It changes only between tamper and restore states.
+           */}
+        <button
+          className={
+            modified
+              ? "restore"
+              : "diagnostic"
+          }
+          onClick={() =>
+            modified
+              ? restoreReceipt()
+              : simulateAlteration()
+          }
+          disabled={loading}
+        >
+          {modified
+            ? "RESTORE VERIFIED RECEIPT"
+            : "SIMULATE RECORD ALTERATION"}
+        </button>
+      </div>
+
+      <div className="disclaimer">
+        <b>
+          GOVERNANCE BOUNDARY
+        </b>
+
+        <span>
+          CooL establishes evidence of
+          recorded execution and detects
+          subsequent evidence modification.
+          It does not establish that an AI
+          decision was correct, fair, or safe.
+        </span>
+      </div>
+    </section>
+  );
+}
 }
 
 function NavButton({
@@ -1772,3 +1857,4 @@ footer{display:block}
 footer span{display:block;margin-top:6px}
 }
 `;
+```
