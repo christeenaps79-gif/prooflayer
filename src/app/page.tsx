@@ -159,7 +159,13 @@ export default function Home() {
     setLoading(true);
     setError("");
     setAuditConfirmed(false);
+
+    /*
+     * Receipt must NOT appear automatically in Audit Records.
+     * It will only be displayed after RETRIEVE RECEIPT.
+     */
     setAuditRecord(null);
+
     setModified(false);
 
     addTimeline(
@@ -236,16 +242,14 @@ export default function Home() {
         `Automatic integrity verification passed`,
       );
 
+      /*
+       * Deliberately do NOT create an audit record here.
+       *
+       * The receipt exists in storage, but the audit screen
+       * will only display it after RETRIEVE RECEIPT is clicked.
+       */
       setAuditConfirmed(false);
-
-      setAuditRecord({
-        recordId: data.recordId,
-        executionId: data.executionId,
-        evidence: data.evidence,
-        verification: data.verification,
-        decision: data.decision,
-        createdAt: new Date().toISOString(),
-      });
+      setAuditRecord(null);
 
       addTimeline(
         `Execution receipt available for audit retrieval`,
@@ -471,10 +475,19 @@ export default function Home() {
     );
   }
 
+  /*
+   * RETRIEVE THE CURRENT STORED RECEIPT
+   *
+   * This deliberately does NOT use activeEvidence.
+   *
+   * It calls the backend storage layer so that if the
+   * stored JSON receipt was manually modified before
+   * retrieval, the modified receipt is what gets loaded.
+   */
   async function retrieveReceipt() {
     setError("");
 
-    if (!currentRecordId || !activeEvidence) {
+    if (!currentRecordId) {
       setError(
         "No execution receipt is available for retrieval.",
       );
@@ -482,56 +495,144 @@ export default function Home() {
     }
 
     setLoading(true);
+    setAuditRecord(null);
+    setAuditConfirmed(false);
 
     addTimeline(
       `Receipt retrieval requested — ${selectedCase.id}`,
     );
 
     try {
-      /*
-       * Retrieve the CURRENT receipt.
-       *
-       * If an actual modification has occurred,
-       * this is the modified evidence.
-       */
-      const auditEvidence = JSON.parse(
-        JSON.stringify(activeEvidence),
+      const response = await fetch(
+        `/api/evidence?recordId=${encodeURIComponent(
+          currentRecordId,
+        )}`,
+        {
+          method: "GET",
+          cache: "no-store",
+        },
       );
 
-      const auditVerification =
-        activeVerification
+      const data = await response.json();
+
+      if (
+        !response.ok ||
+        !data.success ||
+        !data.record
+      ) {
+        throw new Error(
+          data.error ||
+          "Unable to retrieve execution receipt.",
+        );
+      }
+
+      const retrieved = data.record;
+
+      /*
+       * This is the CURRENT receipt returned by
+       * the evidence store.
+       */
+      const retrievedEvidence =
+        retrieved.evidence || {};
+
+      const evidenceCopy = JSON.parse(
+        JSON.stringify(retrievedEvidence),
+      );
+
+      const verificationCopy =
+        retrieved.verification
           ? JSON.parse(
             JSON.stringify(
-              activeVerification,
+              retrieved.verification,
             ),
           )
           : null;
 
+      /*
+       * Load the retrieved receipt into the application.
+       */
+      setEvidence(evidenceCopy);
+
+      setEvidenceByCase((items) => ({
+        ...items,
+        [selectedCase.id]: evidenceCopy,
+      }));
+
+      setVerification(
+        verificationCopy,
+      );
+
+      setVerificationByCase((items) => ({
+        ...items,
+        [selectedCase.id]:
+          verificationCopy,
+      }));
+
+      /*
+       * Compare the retrieved receipt against the
+       * original receipt created during this session.
+       *
+       * This detects a manual change that occurred
+       * before retrieval.
+       */
+      if (originalEvidence) {
+        const retrievedSerialized =
+          JSON.stringify(evidenceCopy);
+
+        const originalSerialized =
+          JSON.stringify(originalEvidence);
+
+        if (
+          retrievedSerialized !==
+          originalSerialized
+        ) {
+          setModified(true);
+
+          setCases((items) =>
+            items.map((item) =>
+              item.id === selectedCase.id
+                ? {
+                  ...item,
+                  status: "exception",
+                }
+                : item,
+            ),
+          );
+
+          addTimeline(
+            `Stored receipt differs from original execution evidence`,
+          );
+        } else {
+          setModified(false);
+        }
+      }
+
       setAuditRecord({
-        recordId: currentRecordId,
+        recordId: retrieved.recordId,
         executionId:
-          auditEvidence.record?.event
+          retrieved.executionId ||
+          evidenceCopy.record?.event
             ?.execution_id ||
-          auditEvidence.execution_id ||
+          evidenceCopy.execution_id ||
           "",
-        evidence: auditEvidence,
-        verification: auditVerification,
-        decision: {
-          caseId: selectedCase.id,
-          decision:
-            selectedCase.recommendation,
-        },
-        createdAt: new Date().toISOString(),
+        evidence: evidenceCopy,
+        verification:
+          verificationCopy,
+        decision: retrieved.decision,
+        createdAt:
+          retrieved.createdAt,
       });
 
       setAuditConfirmed(true);
 
-      await new Promise((resolve) =>
-        setTimeout(resolve, 500),
-      );
-
       addTimeline(
-        `Execution receipt retrieved for audit inspection`,
+        `Current execution receipt retrieved — ${selectedCase.id}`,
+      );
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Unable to retrieve execution receipt.",
       );
     } finally {
       setLoading(false);
@@ -768,8 +869,8 @@ export default function Home() {
                   <div
                     key={item.id}
                     className={`queueRow ${selectedId === item.id
-                        ? "selected"
-                        : ""
+                      ? "selected"
+                      : ""
                       }`}
                     onClick={() =>
                       selectCase(item)
@@ -1007,10 +1108,10 @@ export default function Home() {
 
                 <div
                   className={`diagState ${verified && !modified
-                      ? "good"
-                      : modified
-                        ? "bad"
-                        : "idle"
+                    ? "good"
+                    : modified
+                      ? "bad"
+                      : "idle"
                     }`}
                 >
                   <strong>
@@ -1234,8 +1335,8 @@ export default function Home() {
 
           <div
             className={`resultBadge ${resultVerified
-                ? "good"
-                : "bad"
+              ? "good"
+              : "bad"
               }`}
           >
             <b>

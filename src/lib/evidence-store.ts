@@ -52,15 +52,18 @@ export async function saveEvidence(record: StoredEvidence) {
 }
 
 export async function getEvidence(recordId: string) {
-  const cached = memoryStore.get(recordId);
-  if (cached) return cached;
-
   try {
-    const text = await fs.readFile(storageFile(recordId), "utf8");
+    const text = await fs.readFile(
+      storageFile(recordId),
+      "utf8",
+    );
+
     const record = JSON.parse(text) as StoredEvidence;
+
     memoryStore.set(recordId, record);
+
     return record;
   } catch {
-    return null;
+    return memoryStore.get(recordId) || null;
   }
 }
