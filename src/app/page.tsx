@@ -2135,6 +2135,28 @@ button{font:inherit}
 
 .resultActions{display:flex;gap:8px;padding:17px 19px;border-top:1px solid #20292d}
 
+.tamperEdit{
+border:1px solid #694044!important;
+background:#171011!important;
+color:#d98b90!important;
+font-weight:800;
+}
+
+.tamperEdit:hover{
+background:#211517!important;
+}
+
+.tamperRestore{
+border:1px solid #315046!important;
+background:#0d1513!important;
+color:#79a795!important;
+font-weight:800;
+}
+
+.tamperRestore:hover{
+background:#111d19!important;
+}
+
 .resultActions button,.auditToolbar button,.emptyState button{border:1px solid #2c383c;background:#10171a;color:#91a09f;padding:10px 12px;font-size:8px;letter-spacing:.11em;cursor:pointer}
 
 .resultActions button:disabled,.auditToolbar button:disabled{opacity:.45;cursor:not-allowed}
