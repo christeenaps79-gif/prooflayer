@@ -72,19 +72,15 @@ export default function Home() {
   const [selectedId, setSelectedId] =
     useState(initialCases[0].id);
 
-  // Current receipt being viewed/tested
   const [evidence, setEvidence] =
     useState<Evidence | null>(null);
 
-  // Untampered/original receipt
   const [originalEvidence, setOriginalEvidence] =
     useState<Evidence | null>(null);
 
   const [verification, setVerification] =
     useState<Verification | null>(null);
 
-  // Permanent in-session receipt collection.
-  // Each approved case keeps its original receipt.
   const [evidenceByCase, setEvidenceByCase] =
     useState<Record<string, Evidence>>({});
 
@@ -96,10 +92,13 @@ export default function Home() {
   const [error, setError] = useState("");
   const [storageMode, setStorageMode] =
     useState<string | null>(null);
+
   const [auditConfirmed, setAuditConfirmed] =
     useState(false);
+
   const [auditRecord, setAuditRecord] =
     useState<any>(null);
+
   const [timeline, setTimeline] =
     useState<string[]>([]);
 
@@ -108,9 +107,9 @@ export default function Home() {
     cases[0];
 
   /*
-   * Always prefer the CURRENT receipt.
-   * This is important after an integrity control has
-   * modified the receipt.
+   * Always use the currently loaded receipt.
+   * This means Audit Records sees the same receipt
+   * that is currently being inspected.
    */
   const activeEvidence =
     evidence ||
@@ -287,13 +286,14 @@ export default function Home() {
       }
 
       /*
-       * Support both possible backend response shapes:
+       * Backend returns:
        *
-       * { success: true, verification: {...} }
-       *
-       * or
-       *
-       * { success: true, ok: false, checks: {...} }
+       * {
+       *   success: true,
+       *   ok: boolean,
+       *   checks: {...},
+       *   reasons: [...]
+       * }
        */
       const result: Verification =
         data.verification || data;
@@ -320,14 +320,25 @@ export default function Home() {
   }
 
   /*
-   * Controlled security procedure.
+   * REAL INTEGRITY CONTROL
    *
-   * This replaces the old "TAMPER" / "SIMULATE"
-   * language in the user interface.
+   * This function does NOT modify the receipt.
    *
-   * Internally it modifies one cryptographically
-   * bound field so the backend can demonstrate
-   * integrity detection.
+   * It only verifies the receipt that currently exists.
+   *
+   * Therefore:
+   *
+   * Untouched receipt
+   *       ↓
+   * Verification
+   *       ↓
+   * CONTROL PASS
+   *
+   * Actually modified receipt
+   *       ↓
+   * Verification
+   *       ↓
+   * EXCEPTION DETECTED
    */
   async function runIntegrityControl() {
     const sourceEvidence =
@@ -342,136 +353,104 @@ export default function Home() {
       return;
     }
 
-    if (!originalEvidence) {
-      setOriginalEvidence(
-        JSON.parse(
-          JSON.stringify(sourceEvidence),
-        ),
-      );
-    }
-
-    const changed = JSON.parse(
-      JSON.stringify(sourceEvidence),
-    );
-
-    const event = changed.record?.event;
-
-    if (
-      !event ||
-      typeof event.metadata_hash !== "string"
-    ) {
-      setError(
-        "CooL metadata commitment was not found in the receipt.",
-      );
-      return;
-    }
-
-    /*
-     * Controlled integrity challenge:
-     * alter exactly one hexadecimal character.
-     */
-    event.metadata_hash = flipHex(
-      event.metadata_hash,
-    );
-
-    setEvidence(changed);
-    setModified(true);
-
-    setCases((items) =>
-      items.map((item) =>
-        item.id === selectedCase.id
-          ? {
-            ...item,
-            status: "exception",
-          }
-          : item,
-      ),
-    );
-
+    setError("");
     setAuditRecord(null);
     setAuditConfirmed(false);
-    setError("");
 
     addTimeline(
       `Integrity control initiated — ${selectedCase.id}`,
     );
 
-    const result = await verify(changed);
-
-    if (result?.ok === false) {
-      addTimeline(
-        `Cryptographic integrity exception detected`,
-      );
-    } else if (result?.ok === true) {
-      addTimeline(
-        `Integrity control completed without exception`,
-      );
-    }
-  }
-
-  async function restoreReceipt() {
     /*
-     * Restore ONLY from the untouched original receipt.
+     * If the currently loaded receipt differs from the
+     * untouched receipt retained for this session, mark
+     * the evidence as modified.
+     *
+     * This does NOT create the modification.
+     * It only detects a difference that already exists.
      */
-    const sourceOriginal =
+    const original =
       originalEvidence ||
       evidenceByCase[selectedCase.id] ||
       null;
 
-    if (!sourceOriginal) {
-      setError(
-        "No original verified receipt is available.",
+    if (original) {
+      const currentSerialized =
+        JSON.stringify(sourceEvidence);
+
+      const originalSerialized =
+        JSON.stringify(original);
+
+      if (
+        currentSerialized !==
+        originalSerialized
+      ) {
+        setModified(true);
+
+        setCases((items) =>
+          items.map((item) =>
+            item.id === selectedCase.id
+              ? {
+                ...item,
+                status: "exception",
+              }
+              : item,
+          ),
+        );
+      }
+    }
+
+    /*
+     * Ask the backend to verify the actual receipt.
+     */
+    const result = await verify(sourceEvidence);
+
+    if (result?.ok === false) {
+      setModified(true);
+
+      setCases((items) =>
+        items.map((item) =>
+          item.id === selectedCase.id
+            ? {
+              ...item,
+              status: "exception",
+            }
+            : item,
+        ),
       );
-      return;
+
+      addTimeline(
+        `Cryptographic integrity exception detected`,
+      );
+    } else if (result?.ok === true) {
+      /*
+       * Only clear the exception when the receipt
+       * itself has not been changed.
+       */
+      const stillMatchesOriginal =
+        !original ||
+        JSON.stringify(sourceEvidence) ===
+        JSON.stringify(original);
+
+      if (stillMatchesOriginal) {
+        setModified(false);
+
+        setCases((items) =>
+          items.map((item) =>
+            item.id === selectedCase.id
+              ? {
+                ...item,
+                status: "verified",
+              }
+              : item,
+          ),
+        );
+
+        addTimeline(
+          `Cryptographic integrity verification passed`,
+        );
+      }
     }
-
-    const restored = JSON.parse(
-      JSON.stringify(sourceOriginal),
-    );
-
-    setEvidence(restored);
-
-    setOriginalEvidence(
-      JSON.parse(
-        JSON.stringify(restored),
-      ),
-    );
-
-    setModified(false);
-
-    setCases((items) =>
-      items.map((item) =>
-        item.id === selectedCase.id
-          ? {
-            ...item,
-            status: "verified",
-          }
-          : item,
-      ),
-    );
-
-    setAuditRecord(null);
-    setAuditConfirmed(false);
-    setError("");
-
-    addTimeline(
-      `Original receipt restored — ${selectedCase.id}`,
-    );
-
-    const result = await verify(restored);
-
-    if (result) {
-      setVerification(result);
-
-      setVerificationByCase((items) => ({
-        ...items,
-        [selectedCase.id]: result,
-      }));
-    }
-
-    addTimeline(
-      `Original receipt verified successfully`,
-    );
   }
 
   function openAudit() {
@@ -510,16 +489,10 @@ export default function Home() {
 
     try {
       /*
-       * IMPORTANT:
-       * Snapshot the CURRENT evidence and verification.
+       * Retrieve the CURRENT receipt.
        *
-       * If an integrity control has been run,
-       * activeEvidence is the altered receipt and
-       * activeVerification is the failed verification.
-       *
-       * Therefore Audit retrieves the state currently
-       * under inspection instead of silently reverting
-       * to the original clean receipt.
+       * If an actual modification has occurred,
+       * this is the modified evidence.
        */
       const auditEvidence = JSON.parse(
         JSON.stringify(activeEvidence),
@@ -1051,7 +1024,9 @@ export default function Home() {
                   <span>
                     {modified
                       ? "Receipt integrity exception detected"
-                      : "Server-side verification"}
+                      : verified
+                        ? "Server-side verification passed"
+                        : "Awaiting execution receipt"}
                   </span>
                 </div>
               </div>
@@ -1100,7 +1075,14 @@ export default function Home() {
 
                     <strong
                       className={
-                        modified
+                        findCheck(
+                          activeVerification,
+                          [
+                            "binding",
+                            "binding_integrity",
+                          ],
+                        ) === false ||
+                          modified
                           ? "badText"
                           : "goodText"
                       }
@@ -1111,7 +1093,8 @@ export default function Home() {
                           "binding",
                           "binding_integrity",
                         ],
-                      ) === false
+                      ) === false ||
+                        modified
                         ? "FAILED"
                         : "PASS"}
                     </strong>
@@ -1124,7 +1107,11 @@ export default function Home() {
 
                     <strong
                       className={
-                        modified
+                        findCheck(
+                          activeVerification,
+                          ["signature"],
+                        ) === false ||
+                          modified
                           ? "badText"
                           : "goodText"
                       }
@@ -1132,40 +1119,31 @@ export default function Home() {
                       {findCheck(
                         activeVerification,
                         ["signature"],
-                      ) === false
+                      ) === false ||
+                        modified
                         ? "FAILED"
                         : "PASS"}
                     </strong>
                   </div>
 
                   <div className="diagAction">
-                    {modified ? (
-                      <button
-                        className="restore"
-                        onClick={
-                          restoreReceipt
-                        }
-                        disabled={loading}
-                      >
-                        RESTORE VERIFIED RECEIPT
-                      </button>
-                    ) : (
-                      <button
-                        onClick={
-                          runIntegrityControl
-                        }
-                        disabled={
-                          loading ||
-                          !activeEvidence
-                        }
-                      >
-                        RUN INTEGRITY CONTROL
-                      </button>
-                    )}
+                    <button
+                      onClick={
+                        runIntegrityControl
+                      }
+                      disabled={
+                        loading ||
+                        !activeEvidence
+                      }
+                    >
+                      {loading
+                        ? "VERIFYING RECEIPT..."
+                        : "RUN INTEGRITY CONTROL"}
+                    </button>
 
                     <small>
-                      Controlled verification procedure ·
-                      backend re-verification
+                      Server-side verification ·
+                      cryptographic integrity control
                     </small>
                   </div>
                 </div>
@@ -1712,7 +1690,9 @@ function AuditDetails({
           evidence.record?.event
             ?.metadata_hash
         }
-        changed={verification?.ok === false}
+        changed={
+          verification?.ok === false
+        }
       />
 
       <Hash
@@ -1790,217 +1770,374 @@ function findCheck(
   return null;
 }
 
-function flipHex(value: string): string {
-  const prefix = value.startsWith(
-    "mh:sha256:",
-  )
-    ? "mh:sha256:"
-    : "";
-
-  const hex = value.slice(
-    prefix.length,
-  );
-
-  if (!hex) {
-    return value;
-  }
-
-  const last =
-    hex[hex.length - 1].toLowerCase();
-
-  return `${prefix}${hex.slice(
-    0,
-    -1,
-  )}${last === "0" ? "1" : "0"}`;
-}
-
 const styles = `
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;min-height:100%;background:#080b0e}
 body{color:#dfe6e8;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 button{font:inherit}
+
 .shell{min-height:100vh;position:relative;padding:0 4vw 34px;background:radial-gradient(ellipse at 75% -20%,rgba(51,116,111,.08),transparent 38%),#080b0e}
+
 .gridBackground{position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(rgba(150,170,178,.025) 1px,transparent 1px),linear-gradient(90deg,rgba(150,170,178,.025) 1px,transparent 1px);background-size:52px 52px}
+
 .topbar{height:70px;max-width:1440px;margin:auto;border-bottom:1px solid #20292d;display:flex;align-items:center;justify-content:space-between;position:relative;z-index:2}
+
 .brand{display:flex;gap:13px;align-items:center}
+
 .brand strong{display:block;font-size:12px;letter-spacing:.22em}
+
 .brand small{display:block;color:#59676d;font-size:8px;letter-spacing:.14em;margin-top:4px}
+
 .mark{width:30px;height:30px;border:1px solid #3d5551;display:flex;align-items:center;justify-content:center;gap:3px}
+
 .mark span{width:3px;height:11px;background:#657873}
+
 .mark span:nth-child(2){height:18px}
+
 .mark span:nth-child(3){height:14px}
+
 .systemHealth{font-size:8px;letter-spacing:.13em;color:#66747a;display:flex;gap:8px;align-items:center}
+
 .systemHealth b{color:#71837f;font-weight:700}
+
 .onlineDot{width:6px;height:6px;border-radius:50%;background:#6f817d}
+
 .appFrame{max-width:1440px;margin:0 auto;display:grid;grid-template-columns:205px minmax(0,1fr);position:relative;z-index:2}
+
 .sidebar{border-right:1px solid #20292d;min-height:calc(100vh - 104px);padding:28px 17px 24px 0;display:flex;flex-direction:column}
+
 .sideLabel{font-size:8px;letter-spacing:.18em;color:#4e5c62;font-weight:800;margin:0 0 11px 9px}
+
 .navButton{width:100%;border:0;background:transparent;color:#66747a;text-align:left;padding:11px 9px;display:grid;grid-template-columns:22px 1fr 12px;gap:6px;align-items:center;cursor:pointer}
+
 .navButton span{font-size:8px;color:#465359}
+
 .navButton strong{font-size:10px;font-weight:600}
+
 .navButton b{font-weight:400;color:#465359}
+
 .navButton:hover,.navButton.active{background:#11171a;color:#c9d3d5}
+
 .navButton.active{border-left:2px solid #596f6b;padding-left:7px}
+
 .navButton.active span,.navButton.active b{color:#718580}
+
 .sideDivider{height:1px;background:#1d2529;margin:21px 9px}
+
 .systemRow{display:flex;justify-content:space-between;padding:9px;color:#59676d;font-size:9px}
+
 .systemRow b{font-size:7px;letter-spacing:.08em;color:#687b77}
+
 .sidebarFoot{margin-top:auto;border-top:1px solid #1d2529;padding:18px 9px 0}
+
 .sidebarFoot span{display:block;font-size:7px;letter-spacing:.16em;color:#48565b}
+
 .sidebarFoot strong{display:block;font-size:8px;color:#84948f;margin-top:7px;letter-spacing:.09em}
+
 .sidebarFoot small{display:block;color:#465359;font-size:8px;line-height:1.5;margin-top:7px}
+
 .workspace{padding:39px 0 0 42px;min-width:0}
+
 .workspaceTop{display:flex;justify-content:space-between;gap:30px;border-bottom:1px solid #20292d;padding-bottom:27px}
+
 .eyebrow{font-size:8px;color:#627177;letter-spacing:.17em;font-weight:800}
+
 .workspaceTop h1{margin:8px 0 8px;font-size:34px;letter-spacing:-.045em;font-weight:650;color:#dce5e6}
+
 .workspaceTop p{margin:0;color:#68767b;font-size:12px;line-height:1.6;max-width:650px}
+
 .session{border:1px solid #263236;padding:11px 13px;min-width:145px;align-self:start}
+
 .session span,.session strong,.session small{display:block}
+
 .session span{font-size:7px;color:#4f5d62;letter-spacing:.15em}
+
 .session strong{font-size:10px;margin-top:5px;color:#9aaba8;letter-spacing:.09em}
+
 .session small{font-size:7px;color:#6f817d;margin-top:4px}
+
 .errorPanel{margin-top:18px;border:1px solid rgba(229,108,114,.35);background:#171011;padding:13px;display:flex;gap:12px;color:#e4a1a5}
+
 .errorPanel>b{font-size:14px}
+
 .errorPanel strong{display:block;font-size:8px;letter-spacing:.13em}
+
 .errorPanel span{display:block;font-size:10px;margin-top:4px;color:#a9787b}
+
 .metricGrid{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#242d31;margin-top:24px}
+
 .metric{background:#0d1215;padding:16px 18px;min-height:85px}
+
 .metric span,.metric small{display:block;font-size:7px;letter-spacing:.14em;color:#536167}
+
 .metric strong{display:block;font-size:23px;font-weight:500;color:#c7d1d3;margin-top:7px;letter-spacing:-.03em}
+
 .metric small{letter-spacing:.02em;margin-top:4px;color:#465359}
+
 .sectionHeader{display:flex;justify-content:space-between;align-items:center;margin:28px 0 10px}
+
 .sectionHeader div{display:flex;align-items:center;gap:9px}
+
 .sectionHeader span{font-size:8px;color:#789891}
+
 .sectionHeader strong{font-size:8px;letter-spacing:.17em;color:#77858a}
+
 .sectionHeader small{font-size:8px;color:#48565b}
+
 .queue{border:1px solid #222b2f}
+
 .queueRow{width:100%;display:grid;grid-template-columns:82px minmax(0,1fr) 90px 75px 18px;gap:15px;align-items:center;text-align:left;border:0;border-bottom:1px solid #1d2529;background:#0d1215;color:#d4ddde;padding:14px 16px;cursor:pointer}
+
 .queueRow:last-child{border-bottom:0}
+
 .queueRow:hover,.queueRow.selected{background:#11181b}
+
 .queueRow.selected{box-shadow:inset 2px 0 #596f6b}
+
 .queueIndex{font:600 9px ui-monospace,SFMono-Regular,Menlo,monospace;color:#91a09f}
+
 .queueMain strong{display:block;font-size:11px;font-weight:600}
+
 .queueMain small{display:block;color:#526066;font-size:8px;margin-top:5px}
+
 .priority,.queueStatus{font-size:7px;letter-spacing:.12em}
+
 .priority{color:#66757a}
+
 .priority.high{color:#b59a6e}
+
 .priority.escalated{color:#bd797d}
+
 .queueStatus{justify-self:start;border:1px solid #293438;padding:5px 7px;color:#74837f}
+
 .queueStatus.verified{color:#718f84;border-color:#315046}
+
 .queueStatus.exception{color:#d18186;border-color:#5a3538}
+
 .chevron{font-size:18px;color:#48565b}
+
 .decisionPanel,.resultPanel,.auditView,.diagnosticsView{margin-top:22px;border:1px solid #232c30;background:#0d1215}
+
 .decisionHead,.resultHead,.diagHero{display:flex;justify-content:space-between;gap:25px;padding:22px;border-bottom:1px solid #20292d}
+
 .decisionHead h2,.resultHead h2,.diagHero h2{margin:7px 0 5px;font-size:21px;font-weight:600;color:#d5dfe0}
+
 .decisionHead p,.resultHead p,.diagHero p{margin:0;color:#657278;font-size:10px;line-height:1.55;max-width:610px}
+
 .caseState{font-size:7px;letter-spacing:.13em;color:#788783;display:flex;gap:7px;align-items:center;align-self:start}
+
 .caseState span{width:5px;height:5px;border-radius:50%;background:#78928d}
+
 .caseMeta{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:#232c30}
+
 .caseMeta>div{background:#0a0f12;padding:13px 15px}
+
 .caseMeta span,.caseMeta strong{display:block}
+
 .caseMeta span{font-size:7px;color:#526066;letter-spacing:.13em}
+
 .caseMeta strong{font-size:10px;color:#b7c2c4;margin-top:6px}
+
 .decisionColumns{display:grid;grid-template-columns:1fr 1fr}
+
 .decisionColumns>div{padding:20px;border-right:1px solid #20292d;min-height:125px}
+
 .decisionColumns>div:last-child{border-right:0}
+
 .decisionColumns label,.businessGrid label{display:block;font-size:7px;letter-spacing:.14em;color:#526066;font-weight:800}
+
 .decisionColumns p{font-size:12px;color:#b6c1c3;line-height:1.65;margin:14px 0 0}
+
 .recommendation{background:#0f1518}
+
 .recommendation p{color:#b9ccc8}
+
 .recommendation small{display:block;color:#526066;font-size:8px;line-height:1.5;margin-top:12px}
+
 .decisionAction{padding:17px 20px;border-top:1px solid #20292d;display:flex;align-items:center;gap:15px}
+
 .decisionAction button,.diagAction button{border:1px solid #465b57;background:#111918;color:#a9c2bd;padding:11px 15px;font-size:8px;letter-spacing:.13em;font-weight:800;cursor:pointer}
+
 .decisionAction button:hover,.diagAction button:hover{background:#151f1e}
+
 .decisionAction button:disabled{opacity:.45;cursor:not-allowed}
+
 .decisionAction b{margin-left:17px;font-size:13px;font-weight:400}
+
 .decisionAction span{font-size:8px;color:#526066}
+
 .resultHead{padding:23px}
+
 .resultBadge{display:flex;align-items:center;gap:9px;min-width:145px;align-self:start}
+
 .resultBadge>b{width:28px;height:28px;border:1px solid #315046;display:grid;place-items:center;color:#718f84}
+
 .resultBadge.bad>b{border-color:#65393c;color:#db868a}
+
 .resultBadge span{font-size:7px;letter-spacing:.12em;color:#526066}
+
 .resultBadge strong{display:block;color:#718f84;font-size:9px;margin-top:4px}
+
 .resultBadge.bad strong{color:#d47f84}
+
 .controlStrip{display:grid;grid-template-columns:1fr 1fr 1fr;border-bottom:1px solid #20292d}
+
 .controlStrip div{padding:13px 18px;border-right:1px solid #20292d}
+
 .controlStrip div:last-child{border:0}
+
 .controlStrip span,.controlStrip strong{display:block}
+
 .controlStrip span{font-size:7px;color:#526066;letter-spacing:.14em}
+
 .controlStrip strong{font-size:9px;color:#9eaeac;margin-top:5px}
+
 .resultGrid{display:grid;grid-template-columns:1fr 1.4fr;gap:1px;background:#20292d}
+
 .controlCard{background:#0d1215;padding:19px}
+
 .panelTitle{display:flex;align-items:center;gap:8px;margin-bottom:17px}
+
 .panelTitle span{font-size:8px;color:#789991}
+
 .panelTitle strong{font-size:8px;letter-spacing:.15em;color:#78868b}
+
 .check{display:flex;justify-content:space-between;border-top:1px solid #1e272b;padding:11px 0}
+
 .check span{font-size:9px;color:#77858a}
+
 .check strong{font-size:7px;letter-spacing:.1em;color:#718f84}
+
 .check strong.failed{color:#d27d82}
+
 .check strong.simulated{color:#a28d69}
+
 .hash{border-top:1px solid #1e272b;padding:11px 0}
+
 .hash span{display:block;font-size:7px;color:#526066;letter-spacing:.12em}
+
 .hash strong{display:block;font:8px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#8b9a9d;word-break:break-all;margin-top:6px}
+
 .hash strong.changed{color:#d47e83}
+
 .businessRecord{padding:19px;border-top:1px solid #20292d}
+
 .businessGrid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#20292d}
+
 .businessGrid>div{background:#0a0f12;padding:13px}
+
 .businessGrid strong,.businessGrid small{display:block}
+
 .businessGrid strong{font-size:10px;color:#b9c5c7;margin-top:7px}
+
 .businessGrid small{font-size:8px;color:#4f5c61;margin-top:4px}
+
 .resultActions{display:flex;gap:8px;padding:17px 19px;border-top:1px solid #20292d}
+
 .resultActions button,.auditToolbar button,.emptyState button{border:1px solid #2c383c;background:#10171a;color:#91a09f;padding:10px 12px;font-size:8px;letter-spacing:.11em;cursor:pointer}
+
 .resultActions button:disabled,.auditToolbar button:disabled{opacity:.45;cursor:not-allowed}
+
 .disclaimer{border-top:1px solid #20292d;padding:13px 19px;display:flex;gap:13px}
+
 .disclaimer b{font-size:7px;color:#8a9a96;letter-spacing:.12em;white-space:nowrap}
+
 .disclaimer span{font-size:8px;color:#505d62;line-height:1.5}
+
 .auditView,.diagnosticsView{padding:0}
+
 .auditToolbar{display:flex;align-items:center;gap:15px;padding:17px;border-bottom:1px solid #20292d}
+
 .auditToolbar>span{font-size:7px;color:#536167;letter-spacing:.14em}
+
 .auditToolbar>strong{font:8px ui-monospace,SFMono-Regular,Menlo,monospace;color:#89989a;flex:1;overflow:hidden;text-overflow:ellipsis}
+
 .auditToolbar button{border-color:#3a514d;color:#94afa8}
+
 .auditLoaded{color:#79a795!important;letter-spacing:.1em}
+
 .auditDetails{padding:20px}
+
 .auditSummary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#20292d;margin-bottom:22px}
+
 .auditSummary div{background:#0a0f12;padding:14px}
+
 .auditSummary span{display:block;font-size:7px;color:#526066;letter-spacing:.13em}
+
 .auditSummary strong{display:block;font-size:10px;color:#b8c3c5;margin-top:6px}
+
 .auditDetails>.hash{max-width:none}
+
 .auditException{border:1px solid #5a3538;background:#151012;padding:14px 16px;margin-bottom:20px}
+
 .auditException strong{display:block;color:#d17d83;font-size:8px;letter-spacing:.14em}
+
 .auditException span{display:block;color:#87696c;font-size:9px;line-height:1.6;margin-top:6px}
+
 .auditVerified{border:1px solid #315046;background:#0d1513;padding:14px 16px;margin-bottom:20px}
+
 .auditVerified strong{display:block;color:#718f84;font-size:8px;letter-spacing:.14em}
+
 .auditVerified span{display:block;color:#61736e;font-size:9px;line-height:1.6;margin-top:6px}
+
 .auditReasons{margin-top:20px;border-top:1px solid #20292d;padding-top:15px}
+
 .auditReasons>span{display:block;font-size:7px;color:#526066;letter-spacing:.13em;margin-bottom:10px}
+
 .auditReasons div{font-size:8px;color:#87696c;padding:6px 0;display:flex;align-items:center;gap:8px}
+
 .auditReasons i{width:4px;height:4px;border-radius:50%;background:#d17d83;display:inline-block}
+
 .emptyState{min-height:250px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px}
+
 .emptyState strong{font-size:13px;color:#aab6b8}
+
 .emptyState span{max-width:450px;color:#59676c;font-size:9px;line-height:1.7;margin-top:8px}
+
 .emptyState button{margin-top:16px}
+
 .diagHero{padding:22px}
+
 .diagState{border:1px solid #293538;padding:12px 14px;min-width:160px;align-self:start}
+
 .diagState strong,.diagState span{display:block}
+
 .diagState strong{font-size:8px;letter-spacing:.12em;color:#7d918d}
+
 .diagState span{font-size:8px;color:#526066;margin-top:5px}
+
 .diagState.good{border-color:#315046}
+
 .diagState.good strong{color:#718f84}
+
 .diagState.bad{border-color:#5a3538}
+
 .diagState.bad strong{color:#d17d83}
+
 .diagGrid{display:grid;grid-template-columns:repeat(3,1fr) 1.4fr;gap:1px;background:#20292d}
+
 .diagCard,.diagAction{background:#0a0f12;padding:18px}
+
 .diagCard>span{display:block;font-size:7px;color:#526066;letter-spacing:.13em}
+
 .diagCard>strong{display:block;font-size:16px;color:#b8c4c5;margin-top:9px}
+
 .diagCard>small{display:block;font:7px ui-monospace,monospace;color:#48565b;margin-top:6px;overflow:hidden;text-overflow:ellipsis}
+
 .diagAction{display:flex;flex-direction:column;justify-content:center}
+
 .diagAction small{font-size:7px;color:#526066;line-height:1.5;margin-top:8px}
-.diagAction .restore{border-color:#594043;color:#d18a8e;background:#151012}
+
 .goodText{color:#718f84!important}
+
 .badText{color:#d17d83!important}
+
 .timeline{margin-top:24px}
+
 .timelineRow{border-top:1px solid #1d2529;padding:9px 0;font:8px ui-monospace,SFMono-Regular,Menlo,monospace;color:#667479}
+
 .timelineRow i{display:inline-block;width:5px;height:5px;border-radius:50%;background:#668c84;margin-right:10px}
+
 footer{max-width:1440px;margin:25px auto 0;border-top:1px solid #20292d;padding-top:15px;display:flex;justify-content:space-between;color:#445157;font-size:7px;letter-spacing:.11em;position:relative;z-index:2}
 
 @media(max-width:1100px){
