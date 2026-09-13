@@ -102,7 +102,7 @@ export default function Home() {
    * Always prefer the CURRENT receipt.
    * The saved receipt is only a fallback.
    *
-   * This is what allows the tampered receipt to remain visible
+   * This allows the tampered receipt to remain visible
    * instead of immediately being replaced by the original receipt.
    */
   const activeEvidence =
@@ -181,18 +181,23 @@ export default function Home() {
         );
       }
 
+      const originalCopy = JSON.parse(
+        JSON.stringify(data.evidence),
+      );
+
       // Current receipt
       setEvidence(data.evidence);
-      setOriginalEvidence(
-        JSON.parse(JSON.stringify(data.evidence)),
-      );
+
+      // Keep an untouched original copy
+      setOriginalEvidence(originalCopy);
+
       setVerification(data.verification);
 
       // Keep the original receipt permanently associated
       // with this case during this browser session.
       setEvidenceByCase((items) => ({
         ...items,
-        [selectedCase.id]: data.evidence,
+        [selectedCase.id]: originalCopy,
       }));
 
       setVerificationByCase((items) => ({
@@ -270,9 +275,9 @@ export default function Home() {
       }
 
       /*
-       * Update the current verification.
-       * This is important for the tamper test because the
-       * backend response must replace the old PASS state.
+       * Replace the current verification.
+       * This is important for the tamper test because
+       * the backend response must replace the old PASS state.
        */
       setVerification(data);
 
@@ -287,6 +292,95 @@ export default function Home() {
       return null;
     } finally {
       setLoading(false);
+    }
+  }
+
+  /*
+   * Tamper a specific case directly from the queue.
+   *
+   * This is the important addition:
+   * after all three cases are approved, each VERIFIED
+   * record can be tampered directly without requiring
+   * the user to first navigate somewhere else.
+   */
+  async function tamperCase(item: CaseItem) {
+    const savedEvidence =
+      evidenceByCase[item.id] || null;
+
+    if (!savedEvidence) {
+      setError(
+        "No execution receipt is available for this case.",
+      );
+      return;
+    }
+
+    const cleanOriginal = JSON.parse(
+      JSON.stringify(savedEvidence),
+    );
+
+    const changed = JSON.parse(
+      JSON.stringify(savedEvidence),
+    );
+
+    const event = changed.record?.event;
+
+    if (
+      !event ||
+      typeof event.metadata_hash !== "string"
+    ) {
+      setError(
+        "CooL metadata commitment was not found in the receipt.",
+      );
+      return;
+    }
+
+    // Select the case first.
+    setSelectedId(item.id);
+
+    // Keep the untouched receipt.
+    setOriginalEvidence(cleanOriginal);
+
+    // Change exactly one hex digit.
+    event.metadata_hash = flipHex(
+      event.metadata_hash,
+    );
+
+    // Show the tampered receipt.
+    setEvidence(changed);
+    setModified(true);
+
+    // The record is now an exception.
+    setCases((items) =>
+      items.map((caseItem) =>
+        caseItem.id === item.id
+          ? {
+            ...caseItem,
+            status: "exception",
+          }
+          : caseItem,
+      ),
+    );
+
+    setAuditRecord(null);
+    setAuditConfirmed(false);
+    setError("");
+    setTimeline([]);
+
+    addTimeline(
+      `Security diagnostic altered receipt ${item.id}`,
+    );
+
+    // Send altered receipt to the real backend verifier.
+    const result = await verify(changed);
+
+    if (result && result.ok === false) {
+      addTimeline(
+        `Automatic control detected cryptographic alteration`,
+      );
+    } else if (result && result.ok === true) {
+      addTimeline(
+        `Warning: altered receipt passed verification`,
+      );
     }
   }
 
@@ -719,7 +813,7 @@ export default function Home() {
 
               <div className="queue">
                 {cases.map((item) => (
-                  <button
+                  <div
                     key={item.id}
                     className={`queueRow ${selectedId === item.id
                         ? "selected"
@@ -728,6 +822,16 @@ export default function Home() {
                     onClick={() =>
                       selectCase(item)
                     }
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" ||
+                        event.key === " "
+                      ) {
+                        selectCase(item);
+                      }
+                    }}
                   >
                     <span className="queueIndex">
                       {item.id}
@@ -761,10 +865,78 @@ export default function Home() {
                           : "EXCEPTION"}
                     </span>
 
+                    {item.status === "verified" && (
+                      <button
+                        className="queueTamper"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          tamperCase(item);
+                        }}
+                        disabled={loading}
+                      >
+                        TAMPER
+                      </button>
+                    )}
+
+                    {item.status === "exception" && (
+                      <button
+                        className="queueTamper restoreQueue"
+                        onClick={(event) => {
+                          event.stopPropagation();
+
+                          selectCase(item);
+
+                          const saved =
+                            evidenceByCase[item.id];
+
+                          if (saved) {
+                            const originalCopy =
+                              JSON.parse(
+                                JSON.stringify(saved),
+                              );
+
+                            setEvidence(
+                              originalCopy,
+                            );
+                            setOriginalEvidence(
+                              JSON.parse(
+                                JSON.stringify(
+                                  originalCopy,
+                                ),
+                              ),
+                            );
+                            setModified(false);
+
+                            setCases((items) =>
+                              items.map(
+                                (caseItem) =>
+                                  caseItem.id ===
+                                    item.id
+                                    ? {
+                                      ...caseItem,
+                                      status:
+                                        "verified",
+                                    }
+                                    : caseItem,
+                              ),
+                            );
+
+                            verify(originalCopy);
+                            addTimeline(
+                              `Original receipt restored — ${item.id}`,
+                            );
+                          }
+                        }}
+                        disabled={loading}
+                      >
+                        RESTORE
+                      </button>
+                    )}
+
                     <span className="chevron">
                       ›
                     </span>
-                  </button>
+                  </div>
                 ))}
               </div>
 
@@ -1139,10 +1311,6 @@ export default function Home() {
   );
 
   function ControlResult() {
-    /*
-     * Always use the CURRENT receipt first.
-     * This makes the tampered receipt visible immediately.
-     */
     const resultEvidence =
       evidence ||
       evidenceByCase[selectedCase.id] ||
@@ -1733,7 +1901,7 @@ button{font:inherit}
 .sectionHeader strong{font-size:8px;letter-spacing:.17em;color:#77858a}
 .sectionHeader small{font-size:8px;color:#48565b}
 .queue{border:1px solid #222b2f}
-.queueRow{width:100%;display:grid;grid-template-columns:82px minmax(0,1fr) 90px 75px 18px;gap:15px;align-items:center;text-align:left;border:0;border-bottom:1px solid #1d2529;background:#0d1215;color:#d4ddde;padding:14px 16px;cursor:pointer}
+.queueRow{width:100%;display:grid;grid-template-columns:82px minmax(0,1fr) 90px 75px 78px 18px;gap:15px;align-items:center;text-align:left;border:0;border-bottom:1px solid #1d2529;background:#0d1215;color:#d4ddde;padding:14px 16px;cursor:pointer}
 .queueRow:last-child{border-bottom:0}
 .queueRow:hover,.queueRow.selected{background:#11181b}
 .queueRow.selected{box-shadow:inset 2px 0 #596f6b}
@@ -1747,6 +1915,11 @@ button{font:inherit}
 .queueStatus{justify-self:start;border:1px solid #293438;padding:5px 7px;color:#74837f}
 .queueStatus.verified{color:#718f84;border-color:#315046}
 .queueStatus.exception{color:#d18186;border-color:#5a3538}
+.queueTamper{border:1px solid #5a4c36;background:#15130f;color:#bba679;padding:6px 8px;font-size:7px;letter-spacing:.12em;font-weight:800;cursor:pointer;justify-self:start}
+.queueTamper:hover{background:#211d15;color:#d1bb8e}
+.queueTamper:disabled{opacity:.45;cursor:not-allowed}
+.queueTamper.restoreQueue{border-color:#594043;background:#151012;color:#d18a8e}
+.queueTamper.restoreQueue:hover{background:#211517}
 .chevron{font-size:18px;color:#48565b}
 .decisionPanel,.resultPanel,.auditView,.diagnosticsView{margin-top:22px;border:1px solid #232c30;background:#0d1215}
 .decisionHead,.resultHead,.diagHero{display:flex;justify-content:space-between;gap:25px;padding:22px;border-bottom:1px solid #20292d}
@@ -1852,6 +2025,10 @@ button{font:inherit}
 .timelineRow i{display:inline-block;width:5px;height:5px;border-radius:50%;background:#668c84;margin-right:10px}
 footer{max-width:1440px;margin:25px auto 0;border-top:1px solid #20292d;padding-top:15px;display:flex;justify-content:space-between;color:#445157;font-size:7px;letter-spacing:.11em;position:relative;z-index:2}
 
+@media(max-width:1100px){
+.queueRow{grid-template-columns:75px minmax(0,1fr) 75px 70px 70px 18px}
+}
+
 @media(max-width:900px){
 .appFrame{grid-template-columns:1fr}
 .sidebar{display:none}
@@ -1859,6 +2036,7 @@ footer{max-width:1440px;margin:25px auto 0;border-top:1px solid #20292d;padding-
 .metricGrid{grid-template-columns:repeat(2,1fr)}
 .queueRow{grid-template-columns:75px minmax(0,1fr) 70px 18px}
 .queueStatus{display:none}
+.queueTamper{display:block}
 .caseMeta{grid-template-columns:repeat(2,1fr)}
 .resultGrid,.decisionColumns,.diagGrid{grid-template-columns:1fr}
 .businessGrid,.auditSummary{grid-template-columns:1fr}
