@@ -31,8 +31,10 @@ const initialCases: CaseItem[] = [
     title: "Customer refund request",
     service: "SupportAI",
     policy: "REFUND-01",
-    recommendation: "Refund approved under standard refund policy.",
-    request: "Customer requested a refund for order #78421.",
+    recommendation:
+      "Refund approved under standard refund policy.",
+    request:
+      "Customer requested a refund for order #78421.",
     status: "pending",
     priority: "NORMAL",
   },
@@ -41,7 +43,8 @@ const initialCases: CaseItem[] = [
     title: "Credit adjustment",
     service: "SupportAI",
     policy: "CREDIT-07",
-    recommendation: "Credit adjustment approved within policy threshold.",
+    recommendation:
+      "Credit adjustment approved within policy threshold.",
     request:
       "Customer requested a service credit after a delayed delivery.",
     status: "pending",
@@ -66,12 +69,14 @@ export default function Home() {
   const [view, setView] = useState<View>("operations");
   const [cases, setCases] = useState(initialCases);
 
-  const [selectedId, setSelectedId] = useState(initialCases[0].id);
+  const [selectedId, setSelectedId] =
+    useState(initialCases[0].id);
 
   // Current receipt being viewed/tested
-  const [evidence, setEvidence] = useState<Evidence | null>(null);
+  const [evidence, setEvidence] =
+    useState<Evidence | null>(null);
 
-  // Untampered/original receipt for the currently selected case
+  // Untampered/original receipt
   const [originalEvidence, setOriginalEvidence] =
     useState<Evidence | null>(null);
 
@@ -79,7 +84,7 @@ export default function Home() {
     useState<Verification | null>(null);
 
   // Permanent in-session receipt collection.
-  // Every approved case keeps its own original CooL receipt.
+  // Each approved case keeps its original receipt.
   const [evidenceByCase, setEvidenceByCase] =
     useState<Record<string, Evidence>>({});
 
@@ -89,24 +94,28 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [modified, setModified] = useState(false);
   const [error, setError] = useState("");
-  const [storageMode, setStorageMode] = useState<string | null>(null);
-  const [auditConfirmed, setAuditConfirmed] = useState(false);
-  const [auditRecord, setAuditRecord] = useState<any>(null);
-  const [timeline, setTimeline] = useState<string[]>([]);
+  const [storageMode, setStorageMode] =
+    useState<string | null>(null);
+  const [auditConfirmed, setAuditConfirmed] =
+    useState(false);
+  const [auditRecord, setAuditRecord] =
+    useState<any>(null);
+  const [timeline, setTimeline] =
+    useState<string[]>([]);
 
   const selectedCase =
-    cases.find((item) => item.id === selectedId) || cases[0];
+    cases.find((item) => item.id === selectedId) ||
+    cases[0];
 
   /*
-   * IMPORTANT:
    * Always prefer the CURRENT receipt.
-   * The saved receipt is only a fallback.
-   *
-   * This allows the tampered receipt to remain visible
-   * instead of immediately being replaced by the original receipt.
+   * This is important after an integrity control has
+   * modified the receipt.
    */
   const activeEvidence =
-    evidence || evidenceByCase[selectedCase.id] || null;
+    evidence ||
+    evidenceByCase[selectedCase.id] ||
+    null;
 
   const activeVerification =
     verification ||
@@ -154,7 +163,9 @@ export default function Home() {
     setAuditRecord(null);
     setModified(false);
 
-    addTimeline(`Decision submitted — ${selectedCase.id}`);
+    addTimeline(
+      `Decision submitted — ${selectedCase.id}`,
+    );
 
     try {
       const response = await fetch("/api/evidence", {
@@ -185,16 +196,14 @@ export default function Home() {
         JSON.stringify(data.evidence),
       );
 
-      // Current receipt
-      setEvidence(data.evidence);
+      setEvidence(
+        JSON.parse(JSON.stringify(data.evidence)),
+      );
 
-      // Keep an untouched original copy
       setOriginalEvidence(originalCopy);
 
       setVerification(data.verification);
 
-      // Keep the original receipt permanently associated
-      // with this case during this browser session.
       setEvidenceByCase((items) => ({
         ...items,
         [selectedCase.id]: originalCopy,
@@ -205,7 +214,9 @@ export default function Home() {
         [selectedCase.id]: data.verification,
       }));
 
-      setStorageMode(data.storage?.mode || null);
+      setStorageMode(
+        data.storage?.mode || null,
+      );
 
       setCases((items) =>
         items.map((item) =>
@@ -270,18 +281,31 @@ export default function Home() {
 
       if (!response.ok || !data.success) {
         throw new Error(
-          data.error || "Integrity verification failed",
+          data.error ||
+          "Integrity verification failed",
         );
       }
 
       /*
-       * Replace the current verification.
-       * This is important for the tamper test because
-       * the backend response must replace the old PASS state.
+       * Support both possible backend response shapes:
+       *
+       * { success: true, verification: {...} }
+       *
+       * or
+       *
+       * { success: true, ok: false, checks: {...} }
        */
-      setVerification(data);
+      const result: Verification =
+        data.verification || data;
 
-      return data as Verification;
+      setVerification(result);
+
+      setVerificationByCase((items) => ({
+        ...items,
+        [selectedCase.id]: result,
+      }));
+
+      return result;
     } catch (err) {
       setError(
         err instanceof Error
@@ -296,100 +320,16 @@ export default function Home() {
   }
 
   /*
-   * Tamper a specific case directly from the queue.
+   * Controlled security procedure.
    *
-   * This is the important addition:
-   * after all three cases are approved, each VERIFIED
-   * record can be tampered directly without requiring
-   * the user to first navigate somewhere else.
+   * This replaces the old "TAMPER" / "SIMULATE"
+   * language in the user interface.
+   *
+   * Internally it modifies one cryptographically
+   * bound field so the backend can demonstrate
+   * integrity detection.
    */
-  async function tamperCase(item: CaseItem) {
-    const savedEvidence =
-      evidenceByCase[item.id] || null;
-
-    if (!savedEvidence) {
-      setError(
-        "No execution receipt is available for this case.",
-      );
-      return;
-    }
-
-    const cleanOriginal = JSON.parse(
-      JSON.stringify(savedEvidence),
-    );
-
-    const changed = JSON.parse(
-      JSON.stringify(savedEvidence),
-    );
-
-    const event = changed.record?.event;
-
-    if (
-      !event ||
-      typeof event.metadata_hash !== "string"
-    ) {
-      setError(
-        "CooL metadata commitment was not found in the receipt.",
-      );
-      return;
-    }
-
-    // Select the case first.
-    setSelectedId(item.id);
-
-    // Keep the untouched receipt.
-    setOriginalEvidence(cleanOriginal);
-
-    // Change exactly one hex digit.
-    event.metadata_hash = flipHex(
-      event.metadata_hash,
-    );
-
-    // Show the tampered receipt.
-    setEvidence(changed);
-    setModified(true);
-
-    // The record is now an exception.
-    setCases((items) =>
-      items.map((caseItem) =>
-        caseItem.id === item.id
-          ? {
-            ...caseItem,
-            status: "exception",
-          }
-          : caseItem,
-      ),
-    );
-
-    setAuditRecord(null);
-    setAuditConfirmed(false);
-    setError("");
-    setTimeline([]);
-
-    addTimeline(
-      `Security diagnostic altered receipt ${item.id}`,
-    );
-
-    // Send altered receipt to the real backend verifier.
-    const result = await verify(changed);
-
-    if (result && result.ok === false) {
-      addTimeline(
-        `Automatic control detected cryptographic alteration`,
-      );
-    } else if (result && result.ok === true) {
-      addTimeline(
-        `Warning: altered receipt passed verification`,
-      );
-    }
-  }
-
-  async function simulateAlteration() {
-    /*
-     * IMPORTANT:
-     * Use CURRENT evidence first.
-     * The saved receipt is only a fallback.
-     */
+  async function runIntegrityControl() {
     const sourceEvidence =
       evidence ||
       evidenceByCase[selectedCase.id] ||
@@ -397,18 +337,16 @@ export default function Home() {
 
     if (!sourceEvidence) {
       setError(
-        "No execution receipt is available for this case.",
+        "No execution receipt is available for this control.",
       );
       return;
     }
 
-    /*
-     * Make sure we have a clean original copy before
-     * modifying anything.
-     */
     if (!originalEvidence) {
       setOriginalEvidence(
-        JSON.parse(JSON.stringify(sourceEvidence)),
+        JSON.parse(
+          JSON.stringify(sourceEvidence),
+        ),
       );
     }
 
@@ -428,12 +366,14 @@ export default function Home() {
       return;
     }
 
-    // Change exactly one hex digit.
+    /*
+     * Controlled integrity challenge:
+     * alter exactly one hexadecimal character.
+     */
     event.metadata_hash = flipHex(
       event.metadata_hash,
     );
 
-    // Current receipt becomes the tampered receipt.
     setEvidence(changed);
     setModified(true);
 
@@ -448,27 +388,29 @@ export default function Home() {
       ),
     );
 
+    setAuditRecord(null);
+    setAuditConfirmed(false);
+    setError("");
+
     addTimeline(
-      `Security diagnostic altered receipt ${selectedCase.id}`,
+      `Integrity control initiated — ${selectedCase.id}`,
     );
 
-    // Send altered receipt to the real backend verifier.
     const result = await verify(changed);
 
-    if (result && result.ok === false) {
+    if (result?.ok === false) {
       addTimeline(
-        `Automatic control detected cryptographic alteration`,
+        `Cryptographic integrity exception detected`,
       );
-    } else if (result && result.ok === true) {
+    } else if (result?.ok === true) {
       addTimeline(
-        `Warning: altered receipt passed verification`,
+        `Integrity control completed without exception`,
       );
     }
   }
 
   async function restoreReceipt() {
     /*
-     * IMPORTANT:
      * Restore ONLY from the untouched original receipt.
      */
     const sourceOriginal =
@@ -488,9 +430,13 @@ export default function Home() {
     );
 
     setEvidence(restored);
+
     setOriginalEvidence(
-      JSON.parse(JSON.stringify(restored)),
+      JSON.parse(
+        JSON.stringify(restored),
+      ),
     );
+
     setModified(false);
 
     setCases((items) =>
@@ -504,6 +450,10 @@ export default function Home() {
       ),
     );
 
+    setAuditRecord(null);
+    setAuditConfirmed(false);
+    setError("");
+
     addTimeline(
       `Original receipt restored — ${selectedCase.id}`,
     );
@@ -511,6 +461,8 @@ export default function Home() {
     const result = await verify(restored);
 
     if (result) {
+      setVerification(result);
+
       setVerificationByCase((items) => ({
         ...items,
         [selectedCase.id]: result,
@@ -522,7 +474,7 @@ export default function Home() {
     );
   }
 
-  async function openAudit() {
+  function openAudit() {
     setView("audit");
     setError("");
     setAuditRecord(null);
@@ -557,17 +509,44 @@ export default function Home() {
     );
 
     try {
+      /*
+       * IMPORTANT:
+       * Snapshot the CURRENT evidence and verification.
+       *
+       * If an integrity control has been run,
+       * activeEvidence is the altered receipt and
+       * activeVerification is the failed verification.
+       *
+       * Therefore Audit retrieves the state currently
+       * under inspection instead of silently reverting
+       * to the original clean receipt.
+       */
+      const auditEvidence = JSON.parse(
+        JSON.stringify(activeEvidence),
+      );
+
+      const auditVerification =
+        activeVerification
+          ? JSON.parse(
+            JSON.stringify(
+              activeVerification,
+            ),
+          )
+          : null;
+
       setAuditRecord({
         recordId: currentRecordId,
         executionId:
-          activeEvidence.record?.event?.execution_id ||
-          activeEvidence.execution_id ||
+          auditEvidence.record?.event
+            ?.execution_id ||
+          auditEvidence.execution_id ||
           "",
-        evidence: activeEvidence,
-        verification: activeVerification,
+        evidence: auditEvidence,
+        verification: auditVerification,
         decision: {
           caseId: selectedCase.id,
-          decision: selectedCase.recommendation,
+          decision:
+            selectedCase.recommendation,
         },
         createdAt: new Date().toISOString(),
       });
@@ -589,9 +568,6 @@ export default function Home() {
   function selectCase(item: CaseItem) {
     setSelectedId(item.id);
 
-    /*
-     * Each case has its own independent receipt.
-     */
     const savedEvidence =
       evidenceByCase[item.id] || null;
 
@@ -599,20 +575,23 @@ export default function Home() {
       verificationByCase[item.id] || null;
 
     const evidenceCopy = savedEvidence
-      ? JSON.parse(JSON.stringify(savedEvidence))
+      ? JSON.parse(
+        JSON.stringify(savedEvidence),
+      )
       : null;
 
     setEvidence(evidenceCopy);
 
     setOriginalEvidence(
       evidenceCopy
-        ? JSON.parse(JSON.stringify(evidenceCopy))
+        ? JSON.parse(
+          JSON.stringify(evidenceCopy),
+        )
         : null,
     );
 
     setVerification(savedVerification);
 
-    // New case = fresh diagnostic state.
     setModified(false);
 
     setAuditRecord(null);
@@ -841,6 +820,7 @@ export default function Home() {
                       <strong>
                         {item.title}
                       </strong>
+
                       <small>
                         {item.service} ·{" "}
                         {item.policy}
@@ -864,74 +844,6 @@ export default function Home() {
                           ? "VERIFIED"
                           : "EXCEPTION"}
                     </span>
-
-                    {item.status === "verified" && (
-                      <button
-                        className="queueTamper"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          tamperCase(item);
-                        }}
-                        disabled={loading}
-                      >
-                        TAMPER
-                      </button>
-                    )}
-
-                    {item.status === "exception" && (
-                      <button
-                        className="queueTamper restoreQueue"
-                        onClick={(event) => {
-                          event.stopPropagation();
-
-                          selectCase(item);
-
-                          const saved =
-                            evidenceByCase[item.id];
-
-                          if (saved) {
-                            const originalCopy =
-                              JSON.parse(
-                                JSON.stringify(saved),
-                              );
-
-                            setEvidence(
-                              originalCopy,
-                            );
-                            setOriginalEvidence(
-                              JSON.parse(
-                                JSON.stringify(
-                                  originalCopy,
-                                ),
-                              ),
-                            );
-                            setModified(false);
-
-                            setCases((items) =>
-                              items.map(
-                                (caseItem) =>
-                                  caseItem.id ===
-                                    item.id
-                                    ? {
-                                      ...caseItem,
-                                      status:
-                                        "verified",
-                                    }
-                                    : caseItem,
-                              ),
-                            );
-
-                            verify(originalCopy);
-                            addTimeline(
-                              `Original receipt restored — ${item.id}`,
-                            );
-                          }
-                        }}
-                        disabled={loading}
-                      >
-                        RESTORE
-                      </button>
-                    )}
 
                     <span className="chevron">
                       ›
@@ -987,6 +899,7 @@ export default function Home() {
                   <div className="decisionColumns">
                     <div>
                       <label>REQUEST</label>
+
                       <p>
                         {selectedCase.request}
                       </p>
@@ -1025,6 +938,7 @@ export default function Home() {
                       {loading
                         ? "PROCESSING CONTROL"
                         : "APPROVE DECISION"}
+
                       <b>→</b>
                     </button>
 
@@ -1055,12 +969,7 @@ export default function Home() {
                 </strong>
 
                 {auditConfirmed && (
-                  <span
-                    style={{
-                      color: "#79a795",
-                      letterSpacing: ".1em",
-                    }}
-                  >
+                  <span className="auditLoaded">
                     ✓ RECEIPT LOADED
                   </span>
                 )}
@@ -1117,10 +1026,9 @@ export default function Home() {
                   </h2>
 
                   <p>
-                    Use the current verified
-                    receipt to demonstrate that a
-                    cryptographically bound field
-                    cannot be changed silently.
+                    Validate that a cryptographically
+                    bound execution receipt cannot be
+                    modified without detection.
                   </p>
                 </div>
 
@@ -1142,7 +1050,7 @@ export default function Home() {
 
                   <span>
                     {modified
-                      ? "Receipt alteration detected"
+                      ? "Receipt integrity exception detected"
                       : "Server-side verification"}
                   </span>
                 </div>
@@ -1244,21 +1152,20 @@ export default function Home() {
                     ) : (
                       <button
                         onClick={
-                          simulateAlteration
+                          runIntegrityControl
                         }
                         disabled={
                           loading ||
                           !activeEvidence
                         }
                       >
-                        SIMULATE RECORD ALTERATION
+                        RUN INTEGRITY CONTROL
                       </button>
                     )}
 
                     <small>
-                      Automatic backend
-                      re-verification · no
-                      client-side trust
+                      Controlled verification procedure ·
+                      backend re-verification
                     </small>
                   </div>
                 </div>
@@ -1348,7 +1255,9 @@ export default function Home() {
           </div>
 
           <div
-            className={`resultBadge ${resultVerified ? "good" : "bad"
+            className={`resultBadge ${resultVerified
+                ? "good"
+                : "bad"
               }`}
           >
             <b>
@@ -1357,6 +1266,7 @@ export default function Home() {
 
             <span>
               EXECUTION INTEGRITY
+
               <strong>
                 {resultVerified
                   ? "VERIFIED"
@@ -1369,8 +1279,10 @@ export default function Home() {
         <div className="controlStrip">
           <div>
             <span>RECORD</span>
+
             <strong>
-              {resultEvidence.record?.record_id ||
+              {resultEvidence.record
+                ?.record_id ||
                 resultEvidence.record_id ||
                 resultEvidence.recordId ||
                 ""}
@@ -1379,6 +1291,7 @@ export default function Home() {
 
           <div>
             <span>RECEIPT</span>
+
             <strong>
               {auditConfirmed
                 ? "RETRIEVED"
@@ -1388,6 +1301,7 @@ export default function Home() {
 
           <div>
             <span>ATTESTATION</span>
+
             <strong>
               SIMULATED
             </strong>
@@ -1444,8 +1358,8 @@ export default function Home() {
             <Hash
               label="Metadata hash"
               value={
-                resultEvidence.record?.event
-                  ?.metadata_hash
+                resultEvidence.record
+                  ?.event?.metadata_hash
               }
               changed={modified}
             />
@@ -1460,16 +1374,18 @@ export default function Home() {
             <Hash
               label="Input commitment"
               value={
-                resultEvidence.record?.event
-                  ?.commitments?.input
+                resultEvidence.record
+                  ?.event?.commitments
+                  ?.input
               }
             />
 
             <Hash
               label="Output commitment"
               value={
-                resultEvidence.record?.event
-                  ?.commitments?.output
+                resultEvidence.record
+                  ?.event?.commitments
+                  ?.output
               }
             />
           </div>
@@ -1484,9 +1400,11 @@ export default function Home() {
           <div className="businessGrid">
             <div>
               <label>CASE</label>
+
               <strong>
                 {selectedCase.id}
               </strong>
+
               <small>
                 {selectedCase.title}
               </small>
@@ -1494,9 +1412,11 @@ export default function Home() {
 
             <div>
               <label>DECISION</label>
+
               <strong>
                 Approved
               </strong>
+
               <small>
                 {selectedCase.policy}
               </small>
@@ -1504,9 +1424,11 @@ export default function Home() {
 
             <div>
               <label>AI SERVICE</label>
+
               <strong>
                 {selectedCase.service}
               </strong>
+
               <small>
                 Release 3.2
               </small>
@@ -1534,24 +1456,6 @@ export default function Home() {
             }
           >
             OPEN AUDIT RECORD →
-          </button>
-
-          <button
-            className={
-              modified
-                ? "restore"
-                : "diagnostic"
-            }
-            onClick={() =>
-              modified
-                ? restoreReceipt()
-                : simulateAlteration()
-            }
-            disabled={loading}
-          >
-            {modified
-              ? "RESTORE VERIFIED RECEIPT"
-              : "SIMULATE RECORD ALTERATION"}
           </button>
         </div>
 
@@ -1591,7 +1495,9 @@ function NavButton({
       onClick={onClick}
     >
       <span>{code}</span>
+
       <strong>{label}</strong>
+
       <b>›</b>
     </button>
   );
@@ -1609,7 +1515,9 @@ function Metric({
   return (
     <div className="metric">
       <span>{label}</span>
+
       <strong>{value}</strong>
+
       <small>{detail}</small>
     </div>
   );
@@ -1625,6 +1533,7 @@ function Meta({
   return (
     <div>
       <span>{label}</span>
+
       <strong>{value}</strong>
     </div>
   );
@@ -1640,6 +1549,7 @@ function PanelTitle({
   return (
     <div className="panelTitle">
       <span>{n}</span>
+
       <strong>{title}</strong>
     </div>
   );
@@ -1717,11 +1627,15 @@ function AuditDetails({
   const evidence =
     record.evidence || {};
 
+  const verification =
+    record.verification || null;
+
   return (
     <div className="auditDetails">
       <div className="auditSummary">
         <div>
           <span>CASE</span>
+
           <strong>
             {record.decision?.caseId}
           </strong>
@@ -1729,6 +1643,7 @@ function AuditDetails({
 
         <div>
           <span>DECISION</span>
+
           <strong>
             {record.decision?.decision}
           </strong>
@@ -1736,6 +1651,7 @@ function AuditDetails({
 
         <div>
           <span>CREATED</span>
+
           <strong>
             {record.createdAt
               ? new Date(
@@ -1745,6 +1661,35 @@ function AuditDetails({
           </strong>
         </div>
       </div>
+
+      {verification?.ok === false && (
+        <div className="auditException">
+          <strong>
+            INTEGRITY EXCEPTION
+          </strong>
+
+          <span>
+            The retrieved execution receipt
+            failed cryptographic verification.
+            The recorded evidence differs from
+            its original commitment.
+          </span>
+        </div>
+      )}
+
+      {verification?.ok === true && (
+        <div className="auditVerified">
+          <strong>
+            INTEGRITY VERIFIED
+          </strong>
+
+          <span>
+            The retrieved execution receipt
+            matches its recorded cryptographic
+            commitments.
+          </span>
+        </div>
+      )}
 
       <PanelTitle
         n="01"
@@ -1767,6 +1712,7 @@ function AuditDetails({
           evidence.record?.event
             ?.metadata_hash
         }
+        changed={verification?.ok === false}
       />
 
       <Hash
@@ -1775,6 +1721,30 @@ function AuditDetails({
           evidence.binding_hash
         }
       />
+
+      {verification?.ok === false &&
+        verification.reasons &&
+        verification.reasons.length > 0 && (
+          <div className="auditReasons">
+            <span>
+              VERIFICATION FINDINGS
+            </span>
+
+            {verification.reasons.map(
+              (
+                reason: string,
+                index: number,
+              ) => (
+                <div
+                  key={`${reason}-${index}`}
+                >
+                  <i />
+                  {reason}
+                </div>
+              ),
+            )}
+          </div>
+        )}
     </div>
   );
 }
@@ -1810,7 +1780,10 @@ function findCheck(
       typeof direct === "object" &&
       typeof direct.status === "string"
     ) {
-      return direct.status === "pass";
+      return (
+        direct.status.toLowerCase() ===
+        "pass"
+      );
     }
   }
 
@@ -1901,7 +1874,7 @@ button{font:inherit}
 .sectionHeader strong{font-size:8px;letter-spacing:.17em;color:#77858a}
 .sectionHeader small{font-size:8px;color:#48565b}
 .queue{border:1px solid #222b2f}
-.queueRow{width:100%;display:grid;grid-template-columns:82px minmax(0,1fr) 90px 75px 78px 18px;gap:15px;align-items:center;text-align:left;border:0;border-bottom:1px solid #1d2529;background:#0d1215;color:#d4ddde;padding:14px 16px;cursor:pointer}
+.queueRow{width:100%;display:grid;grid-template-columns:82px minmax(0,1fr) 90px 75px 18px;gap:15px;align-items:center;text-align:left;border:0;border-bottom:1px solid #1d2529;background:#0d1215;color:#d4ddde;padding:14px 16px;cursor:pointer}
 .queueRow:last-child{border-bottom:0}
 .queueRow:hover,.queueRow.selected{background:#11181b}
 .queueRow.selected{box-shadow:inset 2px 0 #596f6b}
@@ -1915,11 +1888,6 @@ button{font:inherit}
 .queueStatus{justify-self:start;border:1px solid #293438;padding:5px 7px;color:#74837f}
 .queueStatus.verified{color:#718f84;border-color:#315046}
 .queueStatus.exception{color:#d18186;border-color:#5a3538}
-.queueTamper{border:1px solid #5a4c36;background:#15130f;color:#bba679;padding:6px 8px;font-size:7px;letter-spacing:.12em;font-weight:800;cursor:pointer;justify-self:start}
-.queueTamper:hover{background:#211d15;color:#d1bb8e}
-.queueTamper:disabled{opacity:.45;cursor:not-allowed}
-.queueTamper.restoreQueue{border-color:#594043;background:#151012;color:#d18a8e}
-.queueTamper.restoreQueue:hover{background:#211517}
 .chevron{font-size:18px;color:#48565b}
 .decisionPanel,.resultPanel,.auditView,.diagnosticsView{margin-top:22px;border:1px solid #232c30;background:#0d1215}
 .decisionHead,.resultHead,.diagHero{display:flex;justify-content:space-between;gap:25px;padding:22px;border-bottom:1px solid #20292d}
@@ -1981,9 +1949,7 @@ button{font:inherit}
 .businessGrid small{font-size:8px;color:#4f5c61;margin-top:4px}
 .resultActions{display:flex;gap:8px;padding:17px 19px;border-top:1px solid #20292d}
 .resultActions button,.auditToolbar button,.emptyState button{border:1px solid #2c383c;background:#10171a;color:#91a09f;padding:10px 12px;font-size:8px;letter-spacing:.11em;cursor:pointer}
-.resultActions .diagnostic{border-color:#5a4c36;color:#bba679;background:#15130f}
-.resultActions .restore{border-color:#594043;color:#d18a8e;background:#151012}
-.resultActions button:disabled{opacity:.45}
+.resultActions button:disabled,.auditToolbar button:disabled{opacity:.45;cursor:not-allowed}
 .disclaimer{border-top:1px solid #20292d;padding:13px 19px;display:flex;gap:13px}
 .disclaimer b{font-size:7px;color:#8a9a96;letter-spacing:.12em;white-space:nowrap}
 .disclaimer span{font-size:8px;color:#505d62;line-height:1.5}
@@ -1992,12 +1958,23 @@ button{font:inherit}
 .auditToolbar>span{font-size:7px;color:#536167;letter-spacing:.14em}
 .auditToolbar>strong{font:8px ui-monospace,SFMono-Regular,Menlo,monospace;color:#89989a;flex:1;overflow:hidden;text-overflow:ellipsis}
 .auditToolbar button{border-color:#3a514d;color:#94afa8}
+.auditLoaded{color:#79a795!important;letter-spacing:.1em}
 .auditDetails{padding:20px}
 .auditSummary{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#20292d;margin-bottom:22px}
 .auditSummary div{background:#0a0f12;padding:14px}
 .auditSummary span{display:block;font-size:7px;color:#526066;letter-spacing:.13em}
 .auditSummary strong{display:block;font-size:10px;color:#b8c3c5;margin-top:6px}
 .auditDetails>.hash{max-width:none}
+.auditException{border:1px solid #5a3538;background:#151012;padding:14px 16px;margin-bottom:20px}
+.auditException strong{display:block;color:#d17d83;font-size:8px;letter-spacing:.14em}
+.auditException span{display:block;color:#87696c;font-size:9px;line-height:1.6;margin-top:6px}
+.auditVerified{border:1px solid #315046;background:#0d1513;padding:14px 16px;margin-bottom:20px}
+.auditVerified strong{display:block;color:#718f84;font-size:8px;letter-spacing:.14em}
+.auditVerified span{display:block;color:#61736e;font-size:9px;line-height:1.6;margin-top:6px}
+.auditReasons{margin-top:20px;border-top:1px solid #20292d;padding-top:15px}
+.auditReasons>span{display:block;font-size:7px;color:#526066;letter-spacing:.13em;margin-bottom:10px}
+.auditReasons div{font-size:8px;color:#87696c;padding:6px 0;display:flex;align-items:center;gap:8px}
+.auditReasons i{width:4px;height:4px;border-radius:50%;background:#d17d83;display:inline-block}
 .emptyState{min-height:250px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px}
 .emptyState strong{font-size:13px;color:#aab6b8}
 .emptyState span{max-width:450px;color:#59676c;font-size:9px;line-height:1.7;margin-top:8px}
@@ -2018,6 +1995,7 @@ button{font:inherit}
 .diagCard>small{display:block;font:7px ui-monospace,monospace;color:#48565b;margin-top:6px;overflow:hidden;text-overflow:ellipsis}
 .diagAction{display:flex;flex-direction:column;justify-content:center}
 .diagAction small{font-size:7px;color:#526066;line-height:1.5;margin-top:8px}
+.diagAction .restore{border-color:#594043;color:#d18a8e;background:#151012}
 .goodText{color:#718f84!important}
 .badText{color:#d17d83!important}
 .timeline{margin-top:24px}
@@ -2026,7 +2004,7 @@ button{font:inherit}
 footer{max-width:1440px;margin:25px auto 0;border-top:1px solid #20292d;padding-top:15px;display:flex;justify-content:space-between;color:#445157;font-size:7px;letter-spacing:.11em;position:relative;z-index:2}
 
 @media(max-width:1100px){
-.queueRow{grid-template-columns:75px minmax(0,1fr) 75px 70px 70px 18px}
+.queueRow{grid-template-columns:75px minmax(0,1fr) 75px 70px 18px}
 }
 
 @media(max-width:900px){
@@ -2036,7 +2014,6 @@ footer{max-width:1440px;margin:25px auto 0;border-top:1px solid #20292d;padding-
 .metricGrid{grid-template-columns:repeat(2,1fr)}
 .queueRow{grid-template-columns:75px minmax(0,1fr) 70px 18px}
 .queueStatus{display:none}
-.queueTamper{display:block}
 .caseMeta{grid-template-columns:repeat(2,1fr)}
 .resultGrid,.decisionColumns,.diagGrid{grid-template-columns:1fr}
 .businessGrid,.auditSummary{grid-template-columns:1fr}
