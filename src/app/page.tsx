@@ -264,7 +264,7 @@ export default function Home() {
 
         <section className="workspace">
           <div className="workspaceTop">
-            <div><div className="eyebrow">{view === "operations" ? "DECISION OPERATIONS" : view === "audit" ? "AUDIT / EVIDENCE RECORDS" : "SECURITY / INTEGRITY DIAGNOSTICS"}</div><h1>{view === "operations" ? "Control queue" : view === "audit" ? "Audit records" : "Integrity diagnostics"}</h1><p>{view === "operations" ? "Review AI-assisted decisions, apply policy controls, and retain verifiable execution evidence." : view === "audit" ? "Retrieve the server-side execution receipt associated with a processed decision." : "Validate that recorded execution evidence cannot be altered without detection."}</p></div>
+            <div><div className="eyebrow">{view === "operations" ? "DECISION OPERATIONS" : view === "audit" ? "AUDIT / EVIDENCE RECORDS" : "SECURITY / INTEGRITY DIAGNOSTICS"}</div><h1>{view === "operations" ? "Control queue" : view === "audit" ? "Audit records" : "Integrity diagnostics"}</h1><p>{view === "operations" ? "Review AI-assisted decisions, apply policy controls, and retain verifiable execution evidence." : view === "audit" ? "Retrieve the CooL execution receipt associated with the processed decision." : "Validate that recorded execution evidence cannot be altered without detection."}</p></div>
             <div className="session"><span>SESSION</span><strong>CONTROL-01</strong><small>LIVE</small></div>
           </div>
 
