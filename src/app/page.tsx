@@ -78,6 +78,15 @@ export default function Home() {
   const [originalEvidence, setOriginalEvidence] =
     useState<Evidence | null>(null);
 
+  /*
+   * Keep a clean baseline separately for every case.
+   *
+   * This is important because the currently displayed
+   * evidence may later be deliberately tampered with.
+   */
+  const [originalEvidenceByCase, setOriginalEvidenceByCase] =
+    useState<Record<string, Evidence>>({});
+
   const [verification, setVerification] =
     useState<Verification | null>(null);
 
@@ -108,8 +117,6 @@ export default function Home() {
 
   /*
    * Always use the currently loaded receipt.
-   * This means Audit Records sees the same receipt
-   * that is currently being inspected.
    */
   const activeEvidence =
     evidence ||
@@ -159,13 +166,7 @@ export default function Home() {
     setLoading(true);
     setError("");
     setAuditConfirmed(false);
-
-    /*
-     * Receipt must NOT appear automatically in Audit Records.
-     * It will only be displayed after RETRIEVE RECEIPT.
-     */
     setAuditRecord(null);
-
     setModified(false);
 
     addTimeline(
@@ -207,11 +208,24 @@ export default function Home() {
 
       setOriginalEvidence(originalCopy);
 
+      /*
+       * Preserve the untouched receipt permanently
+       * for the current case during this session.
+       */
+      setOriginalEvidenceByCase((items) => ({
+        ...items,
+        [selectedCase.id]: JSON.parse(
+          JSON.stringify(originalCopy),
+        ),
+      }));
+
       setVerification(data.verification);
 
       setEvidenceByCase((items) => ({
         ...items,
-        [selectedCase.id]: originalCopy,
+        [selectedCase.id]: JSON.parse(
+          JSON.stringify(originalCopy),
+        ),
       }));
 
       setVerificationByCase((items) => ({
@@ -242,12 +256,6 @@ export default function Home() {
         `Automatic integrity verification passed`,
       );
 
-      /*
-       * Deliberately do NOT create an audit record here.
-       *
-       * The receipt exists in storage, but the audit screen
-       * will only display it after RETRIEVE RECEIPT is clicked.
-       */
       setAuditConfirmed(false);
       setAuditRecord(null);
 
@@ -289,16 +297,6 @@ export default function Home() {
         );
       }
 
-      /*
-       * Backend returns:
-       *
-       * {
-       *   success: true,
-       *   ok: boolean,
-       *   checks: {...},
-       *   reasons: [...]
-       * }
-       */
       const result: Verification =
         data.verification || data;
 
@@ -308,6 +306,22 @@ export default function Home() {
         ...items,
         [selectedCase.id]: result,
       }));
+
+      /*
+       * Keep the currently displayed audit record
+       * synchronized with the evidence being verified.
+       */
+      setAuditRecord((record: any) =>
+        record
+          ? {
+            ...record,
+            evidence: JSON.parse(
+              JSON.stringify(target),
+            ),
+            verification: result,
+          }
+          : record,
+      );
 
       return result;
     } catch (err) {
@@ -324,25 +338,265 @@ export default function Home() {
   }
 
   /*
+   * ============================================================
+   * EDIT LOG / TAMPER
+   * ============================================================
+   *
+   * This deliberately modifies ONLY the copy currently
+   * loaded in the browser.
+   *
+   * The original stored receipt is NOT overwritten.
+   *
+   * Flow:
+   *
+   * CLEAN RECEIPT
+   *      ↓
+   * EDIT LOG / TAMPER
+   *      ↓
+   * LOCAL RECEIPT MODIFIED
+   *      ↓
+   * /api/verify
+   *      ↓
+   * INTEGRITY EXCEPTION
+   */
+  async function tamperEvidence() {
+    const sourceEvidence =
+      evidence ||
+      evidenceByCase[selectedCase.id] ||
+      null;
+
+    if (!sourceEvidence) {
+      setError(
+        "No execution receipt is available to edit.",
+      );
+      return;
+    }
+
+    setError("");
+
+    const tamperedEvidence = JSON.parse(
+      JSON.stringify(sourceEvidence),
+    );
+
+    /*
+     * Change the execution output so the cryptographic
+     * commitment no longer matches.
+     */
+    if (tamperedEvidence.record?.event) {
+      tamperedEvidence.record.event.output =
+        `${String(
+          tamperedEvidence.record.event.output || "",
+        )} [TAMPERED]`;
+    } else if (tamperedEvidence.payloads) {
+      tamperedEvidence.payloads.output =
+        `${String(
+          tamperedEvidence.payloads.output || "",
+        )} [TAMPERED]`;
+    } else if (tamperedEvidence.record) {
+      tamperedEvidence.record.tamper_marker =
+        "TAMPERED";
+    } else {
+      tamperedEvidence.tamper_marker =
+        "TAMPERED";
+    }
+
+    /*
+     * Display the deliberately modified receipt.
+     */
+    setEvidence(tamperedEvidence);
+
+    setEvidenceByCase((items) => ({
+      ...items,
+      [selectedCase.id]: tamperedEvidence,
+    }));
+
+    setModified(true);
+    setAuditConfirmed(true);
+
+    /*
+     * Immediately mark the case as an exception
+     * while the server verification is running.
+     */
+    setCases((items) =>
+      items.map((item) =>
+        item.id === selectedCase.id
+          ? {
+            ...item,
+            status: "exception",
+          }
+          : item,
+      ),
+    );
+
+    /*
+     * Update the audit record so the user sees
+     * the modified receipt in the audit screen.
+     */
+    setAuditRecord((record: any) =>
+      record
+        ? {
+          ...record,
+          evidence: tamperedEvidence,
+        }
+        : record,
+    );
+
+    addTimeline(
+      `Execution receipt deliberately modified — ${selectedCase.id}`,
+    );
+
+    /*
+     * Send the modified receipt to the REAL
+     * backend verifier.
+     */
+    const result =
+      await verify(tamperedEvidence);
+
+    if (result?.ok === false) {
+      setModified(true);
+
+      setCases((items) =>
+        items.map((item) =>
+          item.id === selectedCase.id
+            ? {
+              ...item,
+              status: "exception",
+            }
+            : item,
+        ),
+      );
+
+      setAuditRecord((record: any) =>
+        record
+          ? {
+            ...record,
+            evidence: tamperedEvidence,
+            verification: result,
+          }
+          : record,
+      );
+
+      addTimeline(
+        "Cryptographic integrity exception detected",
+      );
+    } else if (result?.ok === true) {
+      /*
+       * If the backend somehow accepts the modified
+       * receipt, surface that as an error instead of
+       * falsely claiming that tampering was detected.
+       */
+      setError(
+        "Tamper simulation did not trigger an integrity exception.",
+      );
+    }
+  }
+
+  /*
+   * ============================================================
+   * RESTORE ORIGINAL
+   * ============================================================
+   *
+   * Restore the untouched receipt retained when the
+   * decision was originally processed.
+   */
+  async function restoreOriginal() {
+    const original =
+      originalEvidenceByCase[selectedCase.id] ||
+      originalEvidence ||
+      null;
+
+    if (!original) {
+      setError(
+        "Original execution receipt is not available.",
+      );
+      return;
+    }
+
+    setError("");
+
+    const restored = JSON.parse(
+      JSON.stringify(original),
+    );
+
+    setEvidence(restored);
+
+    setEvidenceByCase((items) => ({
+      ...items,
+      [selectedCase.id]: restored,
+    }));
+
+    setOriginalEvidence(
+      JSON.parse(JSON.stringify(restored)),
+    );
+
+    setModified(false);
+
+    setAuditRecord((record: any) =>
+      record
+        ? {
+          ...record,
+          evidence: restored,
+        }
+        : record,
+    );
+
+    addTimeline(
+      `Original execution receipt restored — ${selectedCase.id}`,
+    );
+
+    /*
+     * Verify the restored clean receipt through
+     * the real backend verifier.
+     */
+    const result = await verify(restored);
+
+    if (result?.ok === true) {
+      setModified(false);
+
+      setCases((items) =>
+        items.map((item) =>
+          item.id === selectedCase.id
+            ? {
+              ...item,
+              status: "verified",
+            }
+            : item,
+        ),
+      );
+
+      setAuditRecord((record: any) =>
+        record
+          ? {
+            ...record,
+            evidence: restored,
+            verification: result,
+          }
+          : record,
+      );
+
+      addTimeline(
+        "Restored receipt passed cryptographic verification",
+      );
+    } else if (result?.ok === false) {
+      setModified(true);
+
+      setCases((items) =>
+        items.map((item) =>
+          item.id === selectedCase.id
+            ? {
+              ...item,
+              status: "exception",
+            }
+            : item,
+        ),
+      );
+    }
+  }
+
+  /*
+   * ============================================================
    * REAL INTEGRITY CONTROL
-   *
-   * This function does NOT modify the receipt.
-   *
-   * It only verifies the receipt that currently exists.
-   *
-   * Therefore:
-   *
-   * Untouched receipt
-   *       ↓
-   * Verification
-   *       ↓
-   * CONTROL PASS
-   *
-   * Actually modified receipt
-   *       ↓
-   * Verification
-   *       ↓
-   * EXCEPTION DETECTED
+   * ============================================================
    */
   async function runIntegrityControl() {
     const sourceEvidence =
@@ -365,15 +619,8 @@ export default function Home() {
       `Integrity control initiated — ${selectedCase.id}`,
     );
 
-    /*
-     * If the currently loaded receipt differs from the
-     * untouched receipt retained for this session, mark
-     * the evidence as modified.
-     *
-     * This does NOT create the modification.
-     * It only detects a difference that already exists.
-     */
     const original =
+      originalEvidenceByCase[selectedCase.id] ||
       originalEvidence ||
       evidenceByCase[selectedCase.id] ||
       null;
@@ -404,10 +651,8 @@ export default function Home() {
       }
     }
 
-    /*
-     * Ask the backend to verify the actual receipt.
-     */
-    const result = await verify(sourceEvidence);
+    const result =
+      await verify(sourceEvidence);
 
     if (result?.ok === false) {
       setModified(true);
@@ -427,10 +672,6 @@ export default function Home() {
         `Cryptographic integrity exception detected`,
       );
     } else if (result?.ok === true) {
-      /*
-       * Only clear the exception when the receipt
-       * itself has not been changed.
-       */
       const stillMatchesOriginal =
         !original ||
         JSON.stringify(sourceEvidence) ===
@@ -476,13 +717,9 @@ export default function Home() {
   }
 
   /*
-   * RETRIEVE THE CURRENT STORED RECEIPT
-   *
-   * This deliberately does NOT use activeEvidence.
-   *
-   * It calls the backend storage layer so that if the
-   * stored JSON receipt was manually modified before
-   * retrieval, the modified receipt is what gets loaded.
+   * ============================================================
+   * RETRIEVE STORED RECEIPT
+   * ============================================================
    */
   async function retrieveReceipt() {
     setError("");
@@ -528,10 +765,6 @@ export default function Home() {
 
       const retrieved = data.record;
 
-      /*
-       * This is the CURRENT receipt returned by
-       * the evidence store.
-       */
       const retrievedEvidence =
         retrieved.evidence || {};
 
@@ -548,9 +781,6 @@ export default function Home() {
           )
           : null;
 
-      /*
-       * Load the retrieved receipt into the application.
-       */
       setEvidence(evidenceCopy);
 
       setEvidenceByCase((items) => ({
@@ -569,18 +799,20 @@ export default function Home() {
       }));
 
       /*
-       * Compare the retrieved receipt against the
-       * original receipt created during this session.
-       *
-       * This detects a manual change that occurred
-       * before retrieval.
+       * If we already have the original clean receipt,
+       * compare the retrieved receipt against it.
        */
-      if (originalEvidence) {
+      const knownOriginal =
+        originalEvidenceByCase[selectedCase.id] ||
+        originalEvidence ||
+        null;
+
+      if (knownOriginal) {
         const retrievedSerialized =
           JSON.stringify(evidenceCopy);
 
         const originalSerialized =
-          JSON.stringify(originalEvidence);
+          JSON.stringify(knownOriginal);
 
         if (
           retrievedSerialized !==
@@ -656,12 +888,24 @@ export default function Home() {
 
     setEvidence(evidenceCopy);
 
+    /*
+     * IMPORTANT:
+     * Never replace the clean baseline with a
+     * potentially tampered current receipt.
+     */
+    const knownOriginal =
+      originalEvidenceByCase[item.id] || null;
+
     setOriginalEvidence(
-      evidenceCopy
+      knownOriginal
         ? JSON.parse(
-          JSON.stringify(evidenceCopy),
+          JSON.stringify(knownOriginal),
         )
-        : null,
+        : evidenceCopy
+          ? JSON.parse(
+            JSON.stringify(evidenceCopy),
+          )
+          : null,
     );
 
     setVerification(savedVerification);
@@ -1046,6 +1290,29 @@ export default function Home() {
                   <span className="auditLoaded">
                     ✓ RECEIPT LOADED
                   </span>
+                )}
+
+                {/* REAL TAMPER CONTROL */}
+                {auditRecord && (
+                  <button
+                    className={
+                      modified
+                        ? "tamperRestore"
+                        : "tamperEdit"
+                    }
+                    onClick={
+                      modified
+                        ? restoreOriginal
+                        : tamperEvidence
+                    }
+                    disabled={loading}
+                  >
+                    {loading
+                      ? "VERIFYING..."
+                      : modified
+                        ? "RESTORE ORIGINAL"
+                        : "EDIT LOG / TAMPER"}
+                  </button>
                 )}
 
                 <button
@@ -1448,6 +1715,7 @@ export default function Home() {
               value={
                 resultEvidence.binding_hash
               }
+              changed={modified}
             />
 
             <Hash
@@ -1457,6 +1725,7 @@ export default function Home() {
                   ?.event?.commitments
                   ?.input
               }
+              changed={modified}
             />
 
             <Hash
@@ -1466,6 +1735,7 @@ export default function Home() {
                   ?.event?.commitments
                   ?.output
               }
+              changed={modified}
             />
           </div>
         </div>
@@ -1516,6 +1786,26 @@ export default function Home() {
         </div>
 
         <div className="resultActions">
+          <button
+            className={
+              modified
+                ? "tamperRestore"
+                : "tamperEdit"
+            }
+            onClick={
+              modified
+                ? restoreOriginal
+                : tamperEvidence
+            }
+            disabled={loading}
+          >
+            {loading
+              ? "VERIFYING..."
+              : modified
+                ? "RESTORE ORIGINAL"
+                : "EDIT LOG / TAMPER"}
+          </button>
+
           <button
             className="secondary"
             onClick={() =>
@@ -1748,9 +2038,9 @@ function AuditDetails({
           </strong>
 
           <span>
-            The retrieved execution receipt
-            failed cryptographic verification.
-            The recorded evidence differs from
+            The execution receipt failed
+            cryptographic verification. The
+            recorded evidence differs from
             its original commitment.
           </span>
         </div>
@@ -1792,7 +2082,8 @@ function AuditDetails({
             ?.metadata_hash
         }
         changed={
-          verification?.ok === false
+          verification?.ok === false ||
+          modifiedEvidence(evidence)
         }
       />
 
@@ -1800,6 +2091,9 @@ function AuditDetails({
         label="Binding hash"
         value={
           evidence.binding_hash
+        }
+        changed={
+          verification?.ok === false
         }
       />
 
@@ -1827,6 +2121,20 @@ function AuditDetails({
           </div>
         )}
     </div>
+  );
+}
+
+function modifiedEvidence(
+  evidence: Evidence,
+): boolean {
+  return Boolean(
+    evidence?.tamper_marker ||
+    String(
+      evidence?.record?.event?.output || "",
+    ).includes("[TAMPERED]") ||
+    String(
+      evidence?.payloads?.output || "",
+    ).includes("[TAMPERED]"),
   );
 }
 
@@ -2133,7 +2441,7 @@ button{font:inherit}
 
 .businessGrid small{font-size:8px;color:#4f5c61;margin-top:4px}
 
-.resultActions{display:flex;gap:8px;padding:17px 19px;border-top:1px solid #20292d}
+.resultActions{display:flex;gap:8px;padding:17px 19px;border-top:1px solid #20292d;flex-wrap:wrap}
 
 .tamperEdit{
 border:1px solid #694044!important;
@@ -2169,11 +2477,11 @@ background:#111d19!important;
 
 .auditView,.diagnosticsView{padding:0}
 
-.auditToolbar{display:flex;align-items:center;gap:15px;padding:17px;border-bottom:1px solid #20292d}
+.auditToolbar{display:flex;align-items:center;gap:10px;padding:17px;border-bottom:1px solid #20292d;flex-wrap:wrap}
 
 .auditToolbar>span{font-size:7px;color:#536167;letter-spacing:.14em}
 
-.auditToolbar>strong{font:8px ui-monospace,SFMono-Regular,Menlo,monospace;color:#89989a;flex:1;overflow:hidden;text-overflow:ellipsis}
+.auditToolbar>strong{font:8px ui-monospace,SFMono-Regular,Menlo,monospace;color:#89989a;flex:1;overflow:hidden;text-overflow:ellipsis;min-width:120px}
 
 .auditToolbar button{border-color:#3a514d;color:#94afa8}
 
